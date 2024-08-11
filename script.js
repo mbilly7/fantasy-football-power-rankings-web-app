@@ -1,6 +1,12 @@
 const NUM_TEAMS = 12;
 const NUM_COLS = 9;
 
+const loadSettings = () => {
+    fetch('./settings.json')
+    .then((response) => response.json())
+    .then((json) => console.log(json));
+}
+
 const initializeTable = () => {
     tblBody = document.getElementById("power-rankings-tbody")
     for (let i = 0; i < NUM_TEAMS; i++) {
@@ -18,4 +24,6 @@ const initializeTable = () => {
     }
 }
 
+loadSettings();
+// getESPNFantasyData();
 window.addEventListener('DOMContentLoaded', initializeTable)
