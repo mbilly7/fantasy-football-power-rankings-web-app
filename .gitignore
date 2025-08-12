@@ -1,1 +1,6 @@
 venv/
+.env
+fantasy_football_app_outline
+stat_formulas
+__pycache__/
+*.pyc

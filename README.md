@@ -9,3 +9,5 @@ Extra cool ideas:
 - Graph showing power rankings of each team over time
 - Explanations of each column
 - Displays of other stats, like records for example
+- Historical stats
+- AI-generated summary of each week's rankings
