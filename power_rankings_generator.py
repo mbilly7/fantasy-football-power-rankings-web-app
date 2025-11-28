@@ -65,17 +65,37 @@ def calculate_team_scores(schedule):
             team_scores[match["away"]["teamId"]].append(match["away"]["totalPoints"])
     return team_scores
 
-def calculate_ppg_and_consistency(team_scores):
+def calculate_ppg(team_scores):
     """
-    Calculates points per game (PPG), consistency scores, and ranks for each team.
+    Calculate points-per-game (PPG) per team and return PPG values and PPG ranks.
     
     Args:
         team_scores (dict): Mapping of team ID to list of scores.
     
     Returns:
-        tuple: (team_ppg, team_consistency_scores, team_consistency_rank)
+        tuple: (team_ppg, ppg_ranks)
+            team_ppg (dict): {team_id: ppg}
+            ppg_ranks (dict): {team_id: rank} (1 = best)
     """
-    team_ppg = {tid: sum(scores)/len(scores) if scores else 0 for tid, scores in team_scores.items()}
+    team_ppg = {tid: sum(scores) / len(scores) if scores else 0 for tid, scores in team_scores.items()}
+    ppg_ranks = rank_stat(team_ppg, reverse=True)
+    return team_ppg, ppg_ranks
+
+def calculate_consistency(team_ppg, team_scores):
+    """
+    Calculate consistency score per team and return scores and ranks.
+    
+    Consistency formula: ((PPG - 3 * STDDEV) / (0.75 * league_avg_ppg))
+    
+    Args:
+        team_ppg (dict): Mapping of team ID to PPG.
+        team_scores (dict): Mapping of team ID to list of scores.
+    
+    Returns:
+        tuple: (team_consistency_scores, consistency_ranks)
+            team_consistency_scores (dict): raw consistency values
+            consistency_ranks (dict): {team_id: rank} (1 = best)
+    """
     team_stdev = {tid: statistics.stdev(scores) if len(scores) > 1 else 0 for tid, scores in team_scores.items()}
     league_avg_ppg = sum(team_ppg.values()) / len(team_ppg) if team_ppg else 0
 
@@ -84,21 +104,20 @@ def calculate_ppg_and_consistency(team_scores):
         for tid in team_ppg
     }
 
-    sorted_consistency = sorted(team_consistency_scores.items(), key=lambda x: x[1], reverse=True)
-    team_consistency_rank = {tid: rank+1 for rank, (tid, _) in enumerate(sorted_consistency)}
-
-    return team_ppg, team_consistency_scores, team_consistency_rank
+    consistency_ranks = rank_stat(team_consistency_scores, reverse=True)
+    return team_consistency_scores, consistency_ranks
 
 def calculate_overall_wins_and_losses(schedule, num_teams):
     """
-    Calculates overall wins and losses for each team based on weekly scores.
+    Calculates overall wins and losses for each team based on weekly scores,
+    and returns overall wins/losses plus overall ranks (ties allowed).
     
     Args:
         schedule (list): List of matchup dictionaries.
         num_teams (int): Number of teams in the league.
     
     Returns:
-        tuple: (overall_wins, overall_losses) as defaultdicts.
+        tuple: (overall_wins, overall_losses, overall_ranks)
     """
     overall_wins = defaultdict(int)
     overall_losses = defaultdict(int)
@@ -120,7 +139,8 @@ def calculate_overall_wins_and_losses(schedule, num_teams):
             overall_wins[tid] += wins
             overall_losses[tid] += losses
 
-    return overall_wins, overall_losses
+    overall_ranks = rank_stat(overall_wins, reverse=True)
+    return overall_wins, overall_losses, overall_ranks
 
 def rank_stat(stat_dict, reverse=True):
     """
@@ -145,38 +165,34 @@ def rank_stat(stat_dict, reverse=True):
             prev_value = value
     return ranks
 
-def build_power_scores(team_info, team_ppg, team_consistency_scores, team_consistency_rank, overall_wins, overall_losses, ros_strength, record_weight, current_week):
+def build_power_scores(team_info, stats, weights, current_week):
     """
-    Combines all metrics to build a power score for each team.
-    
+    Combines all metrics to build a power score for each team using rank-based scoring.
+    Lower PR score is better.
+
     Args:
         team_info (dict): Team info mapping.
-        team_ppg (dict): Points per game mapping.
-        team_consistency_scores (dict): Consistency scores mapping.
-        team_consistency_rank (dict): Consistency rank mapping.
-        overall_wins (dict): Overall wins mapping.
-        overall_losses (dict): Overall losses mapping.
-        ros_strength (dict): Rest-of-season strength mapping.
-        record_weight (float): Weight for record score.
-        current_week (int): The current week number.
-    
+        stats (dict): Dict containing per-team stats and ranks. Expected keys:
+            - 'ppg', 'ppg_ranks'
+            - 'consistency_scores', 'consistency_ranks'
+            - 'overall_wins', 'overall_losses', 'overall_ranks'
+            - 'ros_strength', 'ros_ranks'
+        weights (dict): Weights for categories. Expected keys: 'record','overall','consistency','ppg','ros'
+        current_week (int): Current week number.
+
     Returns:
         list: List of team power score dictionaries.
     """
-    # Compute ranks for each stat (lower is better)
+    # record ranks derived from team_info
     record_ranks = rank_stat({tid: info["record_score"] for tid, info in team_info.items()}, reverse=True)
-    overall_ranks = rank_stat(overall_wins, reverse=True)
-    consistency_ranks = rank_stat(team_consistency_scores, reverse=True)
-    ppg_ranks = rank_stat(team_ppg, reverse=True)
-    ros_ranks = rank_stat(ros_strength, reverse=True)
 
     power_scores = []
     for tid, info in team_info.items():
-        record_val = record_ranks[tid] * record_weight
-        overall_val = overall_ranks[tid] * 1.0
-        consistency_val = consistency_ranks[tid] * (1.0 if current_week >= 3 else 0)
-        ppg_val = ppg_ranks[tid] * 1.0
-        ros_val = ros_ranks[tid] * 1.2
+        record_val = record_ranks[tid] * weights.get("record", 1.0)
+        overall_val = stats["overall_ranks"][tid] * weights.get("overall", 1.0)
+        consistency_val = stats["consistency_ranks"][tid] * weights.get("consistency", 1.0) if current_week >= 3 else 0
+        ppg_val = stats["ppg_ranks"][tid] * weights.get("ppg", 1.0)
+        ros_val = stats["ros_ranks"][tid] * weights.get("ros", 1.0)
 
         pr_score = record_val + overall_val + consistency_val + ppg_val + ros_val
 
@@ -184,10 +200,10 @@ def build_power_scores(team_info, team_ppg, team_consistency_scores, team_consis
             "team_id": tid,
             "team_name": info["team_name"],
             "record": info["record_str"],
-            "overall_wins": f"{overall_wins[tid]}-{overall_losses[tid]}",
-            "consistency": team_consistency_rank[tid],
-            "ppg": round(team_ppg[tid], 2),
-            "ros_strength": ros_strength.get(tid, 50),
+            "overall_wins": f"{stats['overall_wins'][tid]}-{stats['overall_losses'][tid]}",
+            "consistency": stats["consistency_ranks"].get(tid, None),
+            "ppg": round(stats["ppg"].get(tid, 0), 2),
+            "ros_strength": stats["ros_strength"].get(tid, 50),
             "pr_score": round(pr_score, 2),
         })
 
@@ -211,14 +227,24 @@ def rank_teams_by_score(power_scores):
 
 def calculate_power_rankings(data, ros_strength=None):
     """
-    Main function to calculate power rankings for all teams.
-    
+    Calculate power rankings for all teams.
+
+    This function orchestrates the entire power ranking computation:
+    - Loads optional MAX_WEEK from the environment to limit schedule processing.
+    - Builds per-team info and per-team stats (PPG, consistency, overall wins/losses, ROS).
+    - Converts raw stats into ranks (ties allowed) and combines those ranks using
+      configured weights to produce a composite PR score (lower is better).
+    - Returns a list of teams sorted by PR score with assigned power_rank values.
+
     Args:
-        data (dict): Dictionary containing 'teams' and 'schedule'.
-        ros_strength (dict, optional): Rest-of-season strength mapping.
-    
+        data (dict): Dictionary containing 'teams' (list of team dicts) and
+                     'schedule' (list of matchup dicts).
+        ros_strength (dict, optional): Rest-of-season roster strength mapping
+                                       keyed by team ID. If not provided, a
+                                       default of 50 is used for each team.
+
     Returns:
-        list: Ranked list of team power score dictionaries.
+        list: Ranked list of team power score dictionaries (best team first).
     """
     load_dotenv()
     max_week = os.getenv("MAX_WEEK")
@@ -234,23 +260,38 @@ def calculate_power_rankings(data, ros_strength=None):
     ros_strength = ros_strength or {team["id"]: 50 for team in teams}
 
     current_week = get_current_week(schedule)
-    record_weight = 1.2 * current_week if current_week < 3 else 3
-
     team_info = get_team_info(teams)
     team_scores = calculate_team_scores(schedule)
-    team_ppg, team_consistency_scores, team_consistency_rank = calculate_ppg_and_consistency(team_scores)
-    overall_wins, overall_losses = calculate_overall_wins_and_losses(schedule, num_teams)
-    power_scores = build_power_scores(
-        team_info,
-        team_ppg,
-        team_consistency_scores,
-        team_consistency_rank,
-        overall_wins,
-        overall_losses,
-        ros_strength,
-        record_weight,
-        current_week
-    )
+
+    # split PPG and consistency calculations
+    team_ppg, ppg_ranks = calculate_ppg(team_scores)
+    consistency_scores, consistency_ranks = calculate_consistency(team_ppg, team_scores)
+
+    overall_wins, overall_losses, overall_ranks = calculate_overall_wins_and_losses(schedule, num_teams)
+    ros_ranks = rank_stat(ros_strength, reverse=True)
+
+    record_weight = 1.2 * current_week if current_week < 3 else 3
+    stats = {
+        "ppg": team_ppg,
+        "ppg_ranks": ppg_ranks,
+        "consistency_scores": consistency_scores,
+        "consistency_ranks": consistency_ranks,
+        "overall_wins": overall_wins,
+        "overall_losses": overall_losses,
+        "overall_ranks": overall_ranks,
+        "ros_strength": ros_strength,
+        "ros_ranks": ros_ranks,
+    }
+
+    weights = {
+        "record": record_weight,
+        "overall": 1.0,
+        "consistency": 1.0,
+        "ppg": 1.0,
+        "ros": 1.2,
+    }
+
+    power_scores = build_power_scores(team_info, stats, weights, current_week)
     ranked_teams = rank_teams_by_score(power_scores)
 
     return ranked_teams
