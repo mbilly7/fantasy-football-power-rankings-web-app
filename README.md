@@ -57,6 +57,12 @@ A web application that generates and displays fantasy football power rankings ba
    ```
    Visit `http://localhost:5000` to view the rankings.
 
+## Testing
+Run the unit tests to validate the core functionality:
+```bash
+python -m pytest tests/
+```
+
 ## Deployment
 The app is deployed on Render. To deploy your own instance:
 - Push code to a GitHub repository.
