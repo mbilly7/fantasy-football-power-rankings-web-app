@@ -38,6 +38,36 @@
             {% endfor %}
         </tbody>
     </table>
+
+    <div class="mt-5">
+        <h2>Stat Explanations</h2>
+        <ul class="list-group list-group-flush">
+            <li class="list-group-item">
+                <strong>Rank:</strong> The power ranking position based on the PR Score (lower is better).
+            </li>
+            <li class="list-group-item">
+                <strong>Team Name:</strong> The name of the fantasy football team.
+            </li>
+            <li class="list-group-item">
+                <strong>Record:</strong> The team's current win-loss-tie record (e.g., 5-2-0).
+            </li>
+            <li class="list-group-item">
+                <strong>Overall Wins:</strong> Wins if the team faced every other team (except itself) every week. Higher is better.
+            </li>
+            <li class="list-group-item">
+                <strong>Consistency:</strong> A score measuring how consistent the team's scoring is, calculated as ((PPG - 3 * Standard Deviation) / (0.75 * League Average PPG)). Lower rank is better.
+            </li>
+            <li class="list-group-item">
+                <strong>PPG:</strong> Points Per Game, the average points scored per matchup. Higher is better.
+            </li>
+            <li class="list-group-item">
+                <strong>ROS Strength:</strong> Rest-of-Season roster strength ranking from FantasyPros (lower rank is better).
+            </li>
+            <li class="list-group-item">
+                <strong>PR Score:</strong> The composite power ranking score, calculated by ranking each stat and weighting them (lower is better).
+            </li>
+        </ul>
+    </div>
 </div>
 </body>
 </html>
