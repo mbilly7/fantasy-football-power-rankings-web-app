@@ -5,3 +5,4 @@ stat_formulas
 __pycache__/
 *.pyc
 fpros-example.json
+rankings.db

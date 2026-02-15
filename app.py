@@ -2,7 +2,8 @@ import os
 import requests
 from flask import Flask, render_template
 from dotenv import load_dotenv
-from power_rankings_generator import calculate_power_rankings
+from power_rankings_generator import calculate_power_rankings, get_current_week
+from database import get_latest_rankings, save_rankings
 
 app = Flask(__name__)
 
@@ -74,6 +75,11 @@ def index():
     if not LEAGUE_ID or not LEAGUE_SEASON:
         return "LEAGUE_ID and LEAGUE_SEASON must be set in the environment", 400
 
+    # Check for cached rankings first
+    cached_rankings = get_latest_rankings(int(LEAGUE_SEASON))
+    if cached_rankings:
+        return render_template("index.html", teams=cached_rankings)
+
     try:
         espn_data = fetch_espn_league_data(LEAGUE_ID, LEAGUE_SEASON, swid=SWID, espn_s2=ESPN_S2)
         fpros_data = fetch_fantasypros_data(FANTASYPROS_KEY)
@@ -83,7 +89,9 @@ def index():
         return f"Unexpected error fetching ESPN data: {e}", 500
 
     ranked_teams = calculate_power_rankings(espn_data, fpros_json=fpros_data)
+    current_week = get_current_week(espn_data.get("schedule", []))
+    save_rankings(current_week, int(LEAGUE_SEASON), ranked_teams)
     return render_template("index.html", teams=ranked_teams)
 
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=os.environ.get('FLASK_DEBUG', False))
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5001)), debug=os.environ.get('FLASK_DEBUG', False))

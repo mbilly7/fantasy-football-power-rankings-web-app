@@ -1,4 +1,3 @@
-import pytest
 from unittest.mock import patch, MagicMock
 from app import fetch_espn_league_data, fetch_fantasypros_data
 

@@ -20,7 +20,7 @@ def sample_schedule():
         {"matchupPeriodId": 1, "winner": "HOME"},
         {"matchupPeriodId": 1, "winner": "AWAY"},
         {"matchupPeriodId": 2, "winner": "HOME"},
-        {"matchupPeriodId": 2, "winner": "UNDECIDED"},  # Not decided
+        {"matchupPeriodId": 2, "winner": "UNDECIDED"},
     ]
 
 
