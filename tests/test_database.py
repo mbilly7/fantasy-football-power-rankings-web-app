@@ -65,9 +65,10 @@ def test_get_latest_rankings(test_db):
         save_rankings(week=2, season=2024, rankings=rankings_week2)
 
         # Should retrieve week 2 (latest)
-        result = get_latest_rankings(season=2024)
+        result_rankings, result_updated_at = get_latest_rankings(season=2024)
 
-        assert result == rankings_week2
+        assert result_rankings == rankings_week2
+        assert result_updated_at is not None
     finally:
         database.Session = original_session
 
@@ -80,8 +81,9 @@ def test_get_latest_rankings_empty(test_db):
     database.Session = Session
 
     try:
-        result = get_latest_rankings(season=9999)
-        assert result is None
+        result_rankings, result_updated_at = get_latest_rankings(season=9999)
+        assert result_rankings is None
+        assert result_updated_at is None
     finally:
         database.Session = original_session
 
@@ -133,11 +135,11 @@ def test_rankings_json_serialization(test_db):
         ]
 
         save_rankings(week=5, season=2024, rankings=rankings)
-        result = get_latest_rankings(season=2024)
+        result_rankings, _ = get_latest_rankings(season=2024)
 
-        assert result == rankings
-        assert result[0]["ppg"] == 125.45
-        assert result[0]["record"] == "10-2-1"
+        assert result_rankings == rankings
+        assert result_rankings[0]["ppg"] == 125.45
+        assert result_rankings[0]["record"] == "10-2-1"
     finally:
         database.Session = original_session
 
@@ -156,8 +158,8 @@ def test_multiple_seasons(test_db):
         save_rankings(week=1, season=2024, rankings=rankings_2024)
         save_rankings(week=1, season=2025, rankings=rankings_2025)
 
-        result_2024 = get_latest_rankings(season=2024)
-        result_2025 = get_latest_rankings(season=2025)
+        result_2024, _ = get_latest_rankings(season=2024)
+        result_2025, _ = get_latest_rankings(season=2025)
 
         assert result_2024 == rankings_2024
         assert result_2025 == rankings_2025

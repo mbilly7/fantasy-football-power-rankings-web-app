@@ -32,6 +32,18 @@ def save_rankings(week, season, rankings):
 
 def get_latest_rankings(season):
     session = Session()
-    entry = session.query(WeeklyRankings).filter_by(season=season).order_by(WeeklyRankings.updated_at.desc()).first()
+    entry = (
+        session.query(WeeklyRankings)
+        .filter_by(season=season)
+        .order_by(WeeklyRankings.updated_at.desc())
+        .first()
+    )
+
+    if not entry:
+        session.close()
+        return None, None
+
+    rankings = json.loads(entry.rankings)
+    updated_at = entry.updated_at
     session.close()
-    return json.loads(entry.rankings) if entry else None
+    return rankings, updated_at

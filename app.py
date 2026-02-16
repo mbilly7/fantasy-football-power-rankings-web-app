@@ -7,6 +7,14 @@ from database import get_latest_rankings, save_rankings
 
 app = Flask(__name__)
 
+
+def format_last_updated(timestamp):
+    if not timestamp:
+        return None
+    if timestamp.tzinfo:
+        return timestamp.strftime("%Y-%m-%d %H:%M:%S %Z")
+    return timestamp.strftime("%Y-%m-%d %H:%M:%S")
+
 def fetch_espn_league_data(league_id, league_season, swid=None, espn_s2=None, timeout=10):
     """
     Fetch league JSON from ESPN.
@@ -76,9 +84,13 @@ def index():
         return "LEAGUE_ID and LEAGUE_SEASON must be set in the environment", 400
 
     # Check for cached rankings first
-    cached_rankings = get_latest_rankings(int(LEAGUE_SEASON))
+    cached_rankings, cached_updated_at = get_latest_rankings(int(LEAGUE_SEASON))
     if cached_rankings:
-        return render_template("index.html", teams=cached_rankings)
+        return render_template(
+            "index.html",
+            teams=cached_rankings,
+            last_updated=format_last_updated(cached_updated_at),
+        )
 
     try:
         espn_data = fetch_espn_league_data(LEAGUE_ID, LEAGUE_SEASON, swid=SWID, espn_s2=ESPN_S2)
@@ -91,7 +103,13 @@ def index():
     ranked_teams = calculate_power_rankings(espn_data, fpros_json=fpros_data)
     current_week = get_current_week(espn_data.get("schedule", []))
     save_rankings(current_week, int(LEAGUE_SEASON), ranked_teams)
-    return render_template("index.html", teams=ranked_teams)
+
+    _, saved_updated_at = get_latest_rankings(int(LEAGUE_SEASON))
+    return render_template(
+        "index.html",
+        teams=ranked_teams,
+        last_updated=format_last_updated(saved_updated_at),
+    )
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5001)), debug=os.environ.get('FLASK_DEBUG', False))
