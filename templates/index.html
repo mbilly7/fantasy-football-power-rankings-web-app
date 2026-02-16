@@ -10,20 +10,48 @@
 <div class="container my-5">
     <h1 class="mb-4">Fantasy Football Power Rankings</h1>
 
-    <table class="table table-striped table-bordered table-hover">
+    <table id="rankings-table" class="table table-striped table-bordered table-hover">
         <caption class="text-right text-muted">
             Last updated: {{ last_updated if last_updated else "Not available" }}
         </caption>
         <thead class="thead-dark">
             <tr>
-                <th>Rank</th>
+                <th>
+                    <button type="button" class="btn btn-link text-white p-0" data-sort-col="0" data-sort-type="number">
+                        Rank <span class="sort-indicator"></span>
+                    </button>
+                </th>
                 <th>Team Name</th>
-                <th>Record</th>
-                <th>Overall Wins</th>
-                <th>Consistency</th>
-                <th>PPG</th>
-                <th>ROS Strength</th>
-                <th>PR Score</th>
+                <th>
+                    <button type="button" class="btn btn-link text-white p-0" data-sort-col="2" data-sort-type="record">
+                        Record <span class="sort-indicator"></span>
+                    </button>
+                </th>
+                <th>
+                    <button type="button" class="btn btn-link text-white p-0" data-sort-col="3" data-sort-type="record">
+                        Overall Wins <span class="sort-indicator"></span>
+                    </button>
+                </th>
+                <th>
+                    <button type="button" class="btn btn-link text-white p-0" data-sort-col="4" data-sort-type="number">
+                        Consistency <span class="sort-indicator"></span>
+                    </button>
+                </th>
+                <th>
+                    <button type="button" class="btn btn-link text-white p-0" data-sort-col="5" data-sort-type="number">
+                        PPG <span class="sort-indicator"></span>
+                    </button>
+                </th>
+                <th>
+                    <button type="button" class="btn btn-link text-white p-0" data-sort-col="6" data-sort-type="number">
+                        ROS Strength <span class="sort-indicator"></span>
+                    </button>
+                </th>
+                <th>
+                    <button type="button" class="btn btn-link text-white p-0" data-sort-col="7" data-sort-type="number">
+                        PR Score <span class="sort-indicator"></span>
+                    </button>
+                </th>
             </tr>
         </thead>
         <tbody>
@@ -72,5 +100,73 @@
         </ul>
     </div>
 </div>
+<script>
+    (function () {
+        const table = document.getElementById("rankings-table");
+        if (!table || !table.tBodies.length) return;
+
+        const tbody = table.tBodies[0];
+        const sortButtons = table.querySelectorAll("button[data-sort-col]");
+
+        function parseRecord(value) {
+            const match = value.trim().match(/^(\d+)-(\d+)(?:-(\d+))?$/);
+            if (!match) return Number.NEGATIVE_INFINITY;
+            const wins = Number(match[1]);
+            const losses = Number(match[2]);
+            const ties = match[3] ? Number(match[3]) : 0;
+            return wins * 1000 - losses * 10 + ties;
+        }
+
+        function parseValue(text, type) {
+            if (type === "record") return parseRecord(text);
+            if (type === "number") {
+                const numeric = Number(text.replace(/,/g, ""));
+                return Number.isNaN(numeric) ? Number.NEGATIVE_INFINITY : numeric;
+            }
+            return text.toLowerCase();
+        }
+
+        function clearIndicators(exceptButton) {
+            sortButtons.forEach((button) => {
+                if (button !== exceptButton) {
+                    button.dataset.sortOrder = "";
+                    const indicator = button.querySelector(".sort-indicator");
+                    if (indicator) indicator.textContent = "";
+                }
+            });
+        }
+
+        sortButtons.forEach((button) => {
+            button.addEventListener("click", () => {
+                const colIndex = Number(button.dataset.sortCol);
+                const sortType = button.dataset.sortType || "text";
+                const currentOrder = button.dataset.sortOrder === "asc" ? "asc" : "desc";
+                const nextOrder = currentOrder === "asc" ? "desc" : "asc";
+                button.dataset.sortOrder = nextOrder;
+
+                clearIndicators(button);
+                const indicator = button.querySelector(".sort-indicator");
+                if (indicator) indicator.textContent = nextOrder === "asc" ? " ▲" : " ▼";
+
+                const rows = Array.from(tbody.querySelectorAll("tr"));
+                rows.sort((rowA, rowB) => {
+                    const rawA = rowA.cells[colIndex]?.textContent?.trim() || "";
+                    const rawB = rowB.cells[colIndex]?.textContent?.trim() || "";
+                    const valA = parseValue(rawA, sortType);
+                    const valB = parseValue(rawB, sortType);
+
+                    if (typeof valA === "number" && typeof valB === "number") {
+                        return nextOrder === "asc" ? valA - valB : valB - valA;
+                    }
+
+                    const cmp = String(valA).localeCompare(String(valB));
+                    return nextOrder === "asc" ? cmp : -cmp;
+                });
+
+                rows.forEach((row) => tbody.appendChild(row));
+            });
+        });
+    })();
+</script>
 </body>
 </html>
