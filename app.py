@@ -95,10 +95,12 @@ def index():
     try:
         espn_data = fetch_espn_league_data(LEAGUE_ID, LEAGUE_SEASON, swid=SWID, espn_s2=ESPN_S2)
         fpros_data = fetch_fantasypros_data(FANTASYPROS_KEY)
-    except requests.HTTPError as e:
-        return f"Failed to fetch ESPN league data: {e}", 502
-    except Exception as e:
-        return f"Unexpected error fetching ESPN data: {e}", 500
+    except requests.HTTPError:
+        app.logger.exception("Upstream API request failed while building rankings")
+        return "Failed to fetch league data from an upstream provider", 502
+    except Exception:
+        app.logger.exception("Unexpected server error while building rankings")
+        return "An unexpected server error occurred", 500
 
     ranked_teams = calculate_power_rankings(espn_data, fpros_json=fpros_data)
     current_week = get_current_week(espn_data.get("schedule", []))
@@ -112,4 +114,5 @@ def index():
     )
 
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5001)), debug=os.environ.get('FLASK_DEBUG', False))
+    debug_mode = os.environ.get("FLASK_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5001)), debug=debug_mode)
