@@ -1,7 +1,10 @@
 import os
+import logging
 import statistics
 from collections import defaultdict
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 def get_current_week(schedule):
     """
@@ -274,8 +277,10 @@ def calculate_power_rankings(data, ros_strength=None, fpros_json=None, weights_o
 
     if max_week:
         schedule = [m for m in schedule if m.get("matchupPeriodId", 0) <= max_week]
+        logger.info("Applied MAX_WEEK=%s; processing %s matchup(s)", max_week, len(schedule))
 
     num_teams = len(teams)
+    logger.info("Calculating power rankings for %s team(s)", num_teams)
 
     # use FantasyPros ranks when provided
     if fpros_json:
@@ -333,5 +338,6 @@ def calculate_power_rankings(data, ros_strength=None, fpros_json=None, weights_o
 
     power_scores = build_power_scores(team_info, stats, weights, current_week)
     ranked_teams = rank_teams_by_score(power_scores)
+    logger.info("Finished calculating power rankings for %s team(s)", len(ranked_teams))
 
     return ranked_teams
