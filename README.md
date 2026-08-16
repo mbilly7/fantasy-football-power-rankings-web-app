@@ -48,9 +48,7 @@ A web application that generates and displays fantasy football power rankings ba
    SWID=your_espn_swid
    ESPN_S2=your_espn_s2
    LEAGUE_ID=your_league_id
-   LEAGUE_SEASON=2024
    FANTASYPROS_KEY=your_fantasypros_key
-   MAX_WEEK=optional_max_week
    ```
 
 4. Run the app locally:
