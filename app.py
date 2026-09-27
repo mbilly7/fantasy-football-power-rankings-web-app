@@ -9,6 +9,7 @@ from flask import Flask, render_template, request
 from dotenv import load_dotenv
 from power_rankings_generator import calculate_power_rankings, get_current_week
 from database import (
+    init_db,
     get_rankings,
     get_available_seasons,
     get_available_weeks,
@@ -28,6 +29,7 @@ logging.basicConfig(
 app = Flask(__name__)
 app.logger.setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
+init_db()
 EARLIEST_PLAUSIBLE_ESPN_SEASON = 2000
 DEFAULT_REGULAR_SEASON_WEEKS = 14
 

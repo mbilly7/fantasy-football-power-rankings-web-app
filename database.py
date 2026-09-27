@@ -4,13 +4,13 @@ from datetime import datetime, timezone
 import os
 from sqlalchemy import create_engine, Column, Integer, DateTime, Text, text, UniqueConstraint, Boolean
 from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 logger = logging.getLogger(__name__)
 Base = declarative_base()
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///rankings.db")
-engine = create_engine(DATABASE_URL)
-Session = sessionmaker(bind=engine)
+# Bound to an engine by init_db().
+Session = sessionmaker()
 
 class WeeklyRankings(Base):
     __tablename__ = 'weekly_rankings'
@@ -34,15 +34,38 @@ class SeasonSyncStatus(Base):
     last_checked_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     last_backfilled_at = Column(DateTime(timezone=True), nullable=True)
 
-Base.metadata.create_all(engine)
 
-try:
-    with engine.connect() as connection:
-        connection.execute(text("SELECT 1"))
-    logger.info("Connected to rankings database at %s", DATABASE_URL)
-except Exception:
-    logger.exception("Failed to connect to rankings database at %s", DATABASE_URL)
-    raise
+def init_db(database_url=None):
+    """
+    Connect to the database, create any missing tables, and bind Session to it.
+
+    Args:
+        database_url (str, optional): SQLAlchemy URL. Defaults to DATABASE_URL, then a local SQLite file.
+            "sqlite://" gives an in-memory database shared by all sessions (useful for tests).
+
+    Returns:
+        Engine: The engine Session is now bound to.
+    """
+    url = database_url or os.getenv("DATABASE_URL", "sqlite:///rankings.db")
+    engine_options = {}
+    if url in ("sqlite://", "sqlite:///:memory:"):
+        # Each new connection to an in-memory SQLite DB would otherwise get its own empty database.
+        engine_options = {"poolclass": StaticPool, "connect_args": {"check_same_thread": False}}
+    engine = create_engine(url, **engine_options)
+    safe_url = engine.url.render_as_string(hide_password=True)
+
+    try:
+        Base.metadata.create_all(engine)
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+    except Exception:
+        logger.exception("Failed to connect to rankings database at %s", safe_url)
+        raise
+
+    Session.configure(bind=engine)
+    logger.info("Connected to rankings database at %s", safe_url)
+    return engine
+
 
 def save_rankings(week, season, rankings):
     with Session() as session:
@@ -58,41 +81,17 @@ def save_rankings(week, season, rankings):
     )
 
 
-def _load_rankings_entry(*order_by, **filters):
-    """
-    Return the first WeeklyRankings row matching `filters` under `order_by`, as
-    (rankings, updated_at, week), or (None, None, None) if there is no match.
-    """
+def get_rankings(season, week):
+    """Rankings for one week of a season, as (rankings, updated_at), or (None, None) if not cached."""
     with Session() as session:
-        entry = session.query(WeeklyRankings).filter_by(**filters).order_by(*order_by).first()
+        entry = session.query(WeeklyRankings).filter_by(season=season, week=week).first()
 
     if not entry:
-        logger.info("No cached rankings found for %s", filters)
-        return None, None, None
+        logger.info("No cached rankings found for season=%s week=%s", season, week)
+        return None, None
 
-    logger.info("Loaded cached rankings for %s week=%s updated_at=%s", filters, entry.week, entry.updated_at)
-    return json.loads(entry.rankings), entry.updated_at, entry.week
-
-
-def get_latest_rankings(season):
-    """Most recently saved rankings for a season, as (rankings, updated_at)."""
-    rankings, updated_at, _ = _load_rankings_entry(WeeklyRankings.updated_at.desc(), season=season)
-    return rankings, updated_at
-
-
-def get_latest_rankings_entry(season):
-    """Rankings for the highest saved week of a season, as (rankings, updated_at, week)."""
-    return _load_rankings_entry(
-        WeeklyRankings.week.desc(), WeeklyRankings.updated_at.desc(), season=season
-    )
-
-
-def get_rankings(season, week):
-    """Rankings for one week of a season, as (rankings, updated_at)."""
-    rankings, updated_at, _ = _load_rankings_entry(
-        WeeklyRankings.updated_at.desc(), season=season, week=week
-    )
-    return rankings, updated_at
+    logger.info("Loaded cached rankings for season=%s week=%s updated_at=%s", season, week, entry.updated_at)
+    return json.loads(entry.rankings), entry.updated_at
 
 
 def get_available_seasons():
