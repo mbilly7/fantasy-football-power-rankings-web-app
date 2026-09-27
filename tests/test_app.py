@@ -1,5 +1,5 @@
 from unittest.mock import patch, MagicMock
-from app import fetch_espn_league_data, fetch_fantasypros_data
+from app import app as flask_app, fetch_espn_league_data, fetch_fantasypros_data
 
 
 @patch('app.requests.get')
@@ -31,3 +31,123 @@ def test_fetch_fantasypros_data_no_key(mock_get):
     data = fetch_fantasypros_data()
     assert data is None
     mock_get.assert_not_called()
+
+
+@patch("app.get_rankings")
+@patch("app.ensure_week_snapshot")
+@patch("app.get_available_seasons")
+@patch("app.discover_available_seasons")
+def test_index_defaults_to_latest_cached_season_without_league_season(
+    mock_discover_available_seasons,
+    mock_get_available_seasons,
+    mock_ensure_week_snapshot,
+    mock_get_rankings,
+    monkeypatch,
+):
+    monkeypatch.setenv("LEAGUE_ID", "123")
+    monkeypatch.delenv("LEAGUE_SEASON", raising=False)
+
+    mock_discover_available_seasons.return_value = [2024, 2023]
+    mock_get_available_seasons.return_value = [2024]
+    mock_ensure_week_snapshot.return_value = (True, 14, [1], 1)
+    mock_get_rankings.return_value = (
+        [
+            {
+                "power_rank": 1,
+                "team_name": "Team A",
+                "record": "1-0-0",
+                "overall_wins": "1-0",
+                "consistency": 1,
+                "ppg": 100.0,
+                "ros_strength": "N/A",
+                "pr_score": 5.2,
+            }
+        ],
+        None,
+    )
+
+    client = flask_app.test_client()
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert b"Showing season 2024, week 1." in response.data
+    mock_get_rankings.assert_called_once_with(2024, 1)
+
+
+@patch("app.get_rankings")
+@patch("app.ensure_week_snapshot")
+@patch("app.get_available_seasons")
+@patch("app.discover_available_seasons")
+def test_index_falls_back_to_previous_season_when_current_has_no_completed_weeks(
+    mock_discover_available_seasons,
+    mock_get_available_seasons,
+    mock_ensure_week_snapshot,
+    mock_get_rankings,
+    monkeypatch,
+):
+    monkeypatch.setenv("LEAGUE_ID", "123")
+    monkeypatch.delenv("LEAGUE_SEASON", raising=False)
+
+    mock_discover_available_seasons.return_value = [2026, 2025]
+    mock_get_available_seasons.return_value = [2025]
+
+    def ensure_side_effect(_league_id, season, **_kwargs):
+        if season == 2026:
+            return (False, 14, [], None)
+        if season == 2025:
+            return (True, 14, [1], 17)
+        return (False, None, [], None)
+
+    mock_ensure_week_snapshot.side_effect = ensure_side_effect
+    mock_get_rankings.return_value = (
+        [
+            {
+                "power_rank": 1,
+                "team_name": "Team A",
+                "record": "10-4-0",
+                "overall_wins": "91-35",
+                "consistency": 1,
+                "ppg": 123.4,
+                "ros_strength": "N/A",
+                "pr_score": 4.2,
+            }
+        ],
+        None,
+    )
+
+    client = flask_app.test_client()
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert b"Showing season 2025, week 17." in response.data
+    mock_get_rankings.assert_called_once_with(2025, 17)
+
+
+@patch("app.fetch_espn_league_data")
+@patch("app.get_season_sync_status_map")
+@patch("app.upsert_season_sync_status")
+def test_discover_available_seasons_backtracks_until_misses(
+    mock_upsert_season_sync_status,
+    mock_get_season_sync_status_map,
+    mock_fetch_espn_league_data,
+):
+    mock_get_season_sync_status_map.return_value = {}
+
+    def side_effect(_league_id, season, **_kwargs):
+        if season in {2024, 2023}:
+            return {
+                "schedule": [
+                    {"matchupPeriodId": 1, "winner": "HOME"},
+                ]
+            }
+        raise Exception("missing")
+
+    mock_fetch_espn_league_data.side_effect = side_effect
+
+    from app import discover_available_seasons
+
+    seasons = discover_available_seasons("123", swid="s", espn_s2="e")
+
+    assert 2024 in seasons and 2023 in seasons
+    assert seasons == sorted(seasons, reverse=True)
+    assert mock_upsert_season_sync_status.call_count >= 2

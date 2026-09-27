@@ -4,7 +4,19 @@ from datetime import datetime, timezone
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 import database
-from database import Base, WeeklyRankings, save_rankings, get_latest_rankings
+from database import (
+    Base,
+    WeeklyRankings,
+    save_rankings,
+    get_latest_rankings,
+    get_rankings,
+    get_available_seasons,
+    get_available_weeks,
+    get_latest_rankings_entry,
+    get_season_sync_status_map,
+    upsert_season_sync_status,
+    get_discovered_seasons,
+)
 
 
 @pytest.fixture
@@ -192,5 +204,89 @@ def test_updated_at_timestamp(test_db):
         before_naive = before.replace(tzinfo=None)
         after_naive = after.replace(tzinfo=None)
         assert before_naive <= entry_time <= after_naive
+    finally:
+        database.Session = original_session
+
+
+def test_get_rankings_by_week(test_db):
+    _, Session = test_db
+    original_session = database.Session
+    database.Session = Session
+
+    try:
+        week1 = [{"team_id": 1, "team_name": "Team A", "pr_score": 10}]
+        week2 = [{"team_id": 1, "team_name": "Team A", "pr_score": 20}]
+        save_rankings(week=1, season=2024, rankings=week1)
+        save_rankings(week=2, season=2024, rankings=week2)
+
+        result_week1, _ = get_rankings(season=2024, week=1)
+        result_week2, _ = get_rankings(season=2024, week=2)
+        missing, _ = get_rankings(season=2024, week=3)
+
+        assert result_week1 == week1
+        assert result_week2 == week2
+        assert missing is None
+    finally:
+        database.Session = original_session
+
+
+def test_get_available_seasons_and_weeks(test_db):
+    _, Session = test_db
+    original_session = database.Session
+    database.Session = Session
+
+    try:
+        save_rankings(week=1, season=2024, rankings=[{"team_id": 1}])
+        save_rankings(week=3, season=2024, rankings=[{"team_id": 1}])
+        save_rankings(week=2, season=2025, rankings=[{"team_id": 1}])
+
+        seasons = get_available_seasons()
+        weeks_2024 = get_available_weeks(2024)
+        weeks_2025 = get_available_weeks(2025)
+
+        assert seasons == [2025, 2024]
+        assert weeks_2024 == [1, 3]
+        assert weeks_2025 == [2]
+    finally:
+        database.Session = original_session
+
+
+def test_get_latest_rankings_entry_returns_week(test_db):
+    _, Session = test_db
+    original_session = database.Session
+    database.Session = Session
+
+    try:
+        week2 = [{"team_id": 1, "pr_score": 2}]
+        week4 = [{"team_id": 1, "pr_score": 4}]
+        save_rankings(week=2, season=2024, rankings=week2)
+        save_rankings(week=4, season=2024, rankings=week4)
+
+        rankings, updated_at, week = get_latest_rankings_entry(2024)
+        assert rankings == week4
+        assert updated_at is not None
+        assert week == 4
+    finally:
+        database.Session = original_session
+
+
+def test_season_sync_status_tracking(test_db):
+    _, Session = test_db
+    original_session = database.Session
+    database.Session = Session
+
+    try:
+        upsert_season_sync_status(2024, discovered=True, backfilled=False, status="available")
+        upsert_season_sync_status(2023, discovered=False, status="http_404")
+        upsert_season_sync_status(2024, backfilled=True, max_week_backfilled=7, status="backfilled")
+
+        status_map = get_season_sync_status_map()
+        discovered = get_discovered_seasons()
+
+        assert 2024 in status_map
+        assert status_map[2024]["discovered"] is True
+        assert status_map[2024]["backfilled"] is True
+        assert status_map[2024]["max_week_backfilled"] == 7
+        assert discovered == [2024]
     finally:
         database.Session = original_session

@@ -1,8 +1,6 @@
-import os
 import logging
 import statistics
 from collections import defaultdict
-from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +48,34 @@ def get_team_info(teams):
             "games_played": games_played
         }
     return team_info
+
+
+def derive_records_from_schedule(teams, schedule):
+    """Derive per-team record from played matchups in schedule."""
+    records = {team["id"]: {"wins": 0, "losses": 0, "ties": 0} for team in teams}
+
+    for match in schedule:
+        home = match.get("home")
+        away = match.get("away")
+        winner = match.get("winner")
+        if not home or not away or not winner or winner == "UNDECIDED":
+            continue
+
+        home_tid = home["teamId"]
+        away_tid = away["teamId"]
+        if home_tid not in records or away_tid not in records:
+            continue
+        if winner == "HOME":
+            records[home_tid]["wins"] += 1
+            records[away_tid]["losses"] += 1
+        elif winner == "AWAY":
+            records[away_tid]["wins"] += 1
+            records[home_tid]["losses"] += 1
+        elif winner == "TIE":
+            records[home_tid]["ties"] += 1
+            records[away_tid]["ties"] += 1
+
+    return records
 
 def calculate_team_scores(schedule):
     """
@@ -247,12 +273,13 @@ def parse_fantasypros_ros(fpros_json, teams=None):
 
     return ros_map
 
-def calculate_power_rankings(data, ros_strength=None, fpros_json=None, weights_override=None):
+def calculate_power_rankings(
+    data, ros_strength=None, fpros_json=None, weights_override=None, target_week=None
+):
     """
     Calculate power rankings for all teams.
 
     This function orchestrates the entire power ranking computation:
-    - Loads optional MAX_WEEK from the environment to limit schedule processing.
     - Builds per-team info and per-team stats (PPG, consistency, overall wins/losses, ROS).
     - Converts raw stats into ranks (ties allowed) and combines those ranks using
       configured weights to produce a composite PR score (lower is better).
@@ -268,16 +295,12 @@ def calculate_power_rankings(data, ros_strength=None, fpros_json=None, weights_o
     Returns:
         list: Ranked list of team power score dictionaries (best team first).
     """
-    load_dotenv()
-    max_week = os.getenv("MAX_WEEK")
-    max_week = int(max_week) if max_week else None
-
     teams = data["teams"]
     schedule = data["schedule"]
 
-    if max_week:
-        schedule = [m for m in schedule if m.get("matchupPeriodId", 0) <= max_week]
-        logger.info("Applied MAX_WEEK=%s; processing %s matchup(s)", max_week, len(schedule))
+    if target_week is not None:
+        schedule = [m for m in schedule if m.get("matchupPeriodId", 0) <= target_week]
+        logger.info("Applied target_week=%s; processing %s matchup(s)", target_week, len(schedule))
 
     num_teams = len(teams)
     logger.info("Calculating power rankings for %s team(s)", num_teams)
@@ -287,9 +310,13 @@ def calculate_power_rankings(data, ros_strength=None, fpros_json=None, weights_o
         ros_ranks = parse_fantasypros_ros(fpros_json, teams=teams)
         # use the same numeric rank for display (ros_strength_map) and for ranking
         ros_strength_map = ros_ranks.copy()
-    else:
-        ros_strength_map = ros_strength or {team["id"]: 50 for team in teams}
+    elif ros_strength is not None:
+        ros_strength_map = ros_strength
         ros_ranks = rank_stat(ros_strength_map, reverse=True)
+    else:
+        # For historical weeks where ROS data is not available, neutralize ROS scoring.
+        ros_strength_map = {team["id"]: "N/A" for team in teams}
+        ros_ranks = {team["id"]: 1 for team in teams}
 
     current_week = get_current_week(schedule)
 
@@ -315,6 +342,16 @@ def calculate_power_rankings(data, ros_strength=None, fpros_json=None, weights_o
         weights.update(weights_override)
 
     team_info = get_team_info(teams)
+    derived_records = derive_records_from_schedule(teams, schedule)
+    for team_id, info in team_info.items():
+        record = derived_records.get(team_id, {"wins": 0, "losses": 0, "ties": 0})
+        wins = record["wins"]
+        losses = record["losses"]
+        ties = record["ties"]
+        games_played = wins + losses + ties
+        info["record_str"] = f"{wins}-{losses}-{ties}"
+        info["record_score"] = (wins + 0.5 * ties) / games_played if games_played else 0
+        info["games_played"] = games_played
     team_scores = calculate_team_scores(schedule)
 
     team_ppg, ppg_ranks = calculate_ppg(team_scores)

@@ -6,3 +6,4 @@ __pycache__/
 *.pyc
 fpros-example.json
 rankings.db
+.github/copilot-instructions.md

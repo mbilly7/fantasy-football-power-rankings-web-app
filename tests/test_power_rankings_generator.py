@@ -158,4 +158,52 @@ def test_rank_teams_by_score():
     assert ranked[0]["team_id"] == 2  # pr_score 5.0
     assert ranked[1]["team_id"] == 1  # 10.0
     assert ranked[2]["team_id"] == 3  # 15.0
+
+
+def test_calculate_power_rankings_respects_target_week_records():
+    teams = [
+        {"id": 1, "name": "Team A", "record": {"overall": {"wins": 5, "losses": 0, "ties": 0}}},
+        {"id": 2, "name": "Team B", "record": {"overall": {"wins": 0, "losses": 5, "ties": 0}}},
+    ]
+    schedule = [
+        {
+            "matchupPeriodId": 1,
+            "home": {"teamId": 1, "totalPoints": 100.0},
+            "away": {"teamId": 2, "totalPoints": 90.0},
+            "winner": "HOME",
+        },
+        {
+            "matchupPeriodId": 2,
+            "home": {"teamId": 1, "totalPoints": 95.0},
+            "away": {"teamId": 2, "totalPoints": 110.0},
+            "winner": "AWAY",
+        },
+    ]
+    data = {"teams": teams, "schedule": schedule}
+    ranked_teams = calculate_power_rankings(data, target_week=1)
+    records = {team["team_name"]: team["record"] for team in ranked_teams}
+
+    assert records["Team A"] == "1-0-0"
+    assert records["Team B"] == "0-1-0"
+
+
+def test_calculate_power_rankings_uses_na_for_ros_without_fpros():
+    teams = [
+        {"id": 1, "name": "Team A", "record": {"overall": {"wins": 1, "losses": 0, "ties": 0}}},
+        {"id": 2, "name": "Team B", "record": {"overall": {"wins": 0, "losses": 1, "ties": 0}}},
+    ]
+    schedule = [
+        {
+            "matchupPeriodId": 1,
+            "home": {"teamId": 1, "totalPoints": 100.0},
+            "away": {"teamId": 2, "totalPoints": 90.0},
+            "winner": "HOME",
+        }
+    ]
+    data = {"teams": teams, "schedule": schedule}
+    ranked_teams = calculate_power_rankings(data, target_week=1, fpros_json=None)
+
+    ros_values = {team["team_id"]: team["ros_strength"] for team in ranked_teams}
+    assert ros_values[1] == "N/A"
+    assert ros_values[2] == "N/A"
     

@@ -10,6 +10,7 @@ A web application that generates and displays fantasy football power rankings ba
 - **Data Integration**: Fetches league data from the ESPN Fantasy API and roster strength from FantasyPros.
 - **Power Rankings Calculation**: Computes rankings using weighted metrics (record, PPG, consistency, overall wins, ROS strength) with tie-handling for accurate positioning.
 - **Table Display**: Presents rankings in a clean, sortable table with columns for team name, record, overall wins, consistency, PPG, ROS strength, and PR score.
+- **Historical Picker**: Season/week selectors cover historical seasons and regular-season weeks; week snapshots are calculated on demand and then served from cache.
 
 ## Screenshots
 ![Fantasy Football Power Rankings](screenshots/app-screenshot.png)
@@ -50,6 +51,7 @@ A web application that generates and displays fantasy football power rankings ba
    LEAGUE_ID=your_league_id
    FANTASYPROS_KEY=your_fantasypros_key
    ```
+   `LEAGUE_ID` is required. Season/week are selected in the UI and default to the latest available cached or completed data.
 
 4. Run the app locally:
    ```bash
