@@ -4,6 +4,20 @@ from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 
+BASE_WEIGHTS = {
+    "record": 1.0,
+    "overall": 1.0,
+    "consistency": 1.0,
+    "ppg": 1.0,
+    "ros": 1.2,
+}
+# Record weight grows as the season progresses: week 1, week 2, then week 3 onward.
+EARLY_RECORD_MULTIPLIERS = {1: 1.2, 2: 2.4}
+FULL_RECORD_MULTIPLIER = 3.0
+# Consistency needs a few games of variance before it means anything.
+CONSISTENCY_MIN_WEEK = 3
+DEFAULT_ROS_STRENGTH = 50
+
 def get_current_week(schedule):
     """
     Returns the current week number based on the schedule.
@@ -21,12 +35,24 @@ def get_current_week(schedule):
         if m.get("winner") and m["winner"] != "UNDECIDED"
     )
 
-def get_team_info(teams):
+def summarize_record(wins, losses, ties):
+    """Format a win-loss-tie record and compute its win percentage (ties count as half a win)."""
+    games_played = wins + losses + ties
+    return {
+        "record_str": f"{wins}-{losses}-{ties}",
+        "record_score": (wins + 0.5 * ties) / games_played if games_played else 0,
+        "games_played": games_played,
+    }
+
+
+def get_team_info(teams, records=None):
     """
     Extracts basic team information and computes record score.
     
     Args:
         teams (list): List of team dictionaries.
+        records (dict, optional): Mapping of team ID to {"wins", "losses", "ties"}.
+            Defaults to each team's current overall record from ESPN.
     
     Returns:
         dict: Mapping of team ID to team info dictionary.
@@ -34,18 +60,10 @@ def get_team_info(teams):
     team_info = {}
     for team in teams:
         tid = team["id"]
-        name = team["name"]
-        wins = team["record"]["overall"]["wins"]
-        losses = team["record"]["overall"]["losses"]
-        ties = team["record"]["overall"]["ties"]
-        games_played = wins + losses + ties
-        record_score = (wins + 0.5 * ties) / games_played if games_played else 0
-
+        record = records[tid] if records is not None else team["record"]["overall"]
         team_info[tid] = {
-            "team_name": name,
-            "record_str": f"{wins}-{losses}-{ties}",
-            "record_score": record_score,
-            "games_played": games_played
+            "team_name": team["name"],
+            **summarize_record(record["wins"], record["losses"], record["ties"]),
         }
     return team_info
 
@@ -219,7 +237,11 @@ def build_power_scores(team_info, stats, weights, current_week):
     for tid, info in team_info.items():
         record_val = record_ranks[tid] * weights.get("record", 1.0)
         overall_val = stats["overall_ranks"][tid] * weights.get("overall", 1.0)
-        consistency_val = stats["consistency_ranks"][tid] * weights.get("consistency", 1.0) if current_week >= 3 else 0
+        consistency_val = (
+            stats["consistency_ranks"][tid] * weights.get("consistency", 1.0)
+            if current_week >= CONSISTENCY_MIN_WEEK
+            else 0
+        )
         ppg_val = stats["ppg_ranks"][tid] * weights.get("ppg", 1.0)
         ros_val = stats["ros_ranks"][tid] * weights.get("ros", 1.0)
 
@@ -232,7 +254,7 @@ def build_power_scores(team_info, stats, weights, current_week):
             "overall_wins": f"{stats['overall_wins'][tid]}-{stats['overall_losses'][tid]}",
             "consistency": stats["consistency_ranks"].get(tid, None),
             "ppg": round(stats["ppg"].get(tid, 0), 2),
-            "ros_strength": stats["ros_strength"].get(tid, 50),
+            "ros_strength": stats["ros_strength"].get(tid, DEFAULT_ROS_STRENGTH),
             "pr_score": round(pr_score, 2),
         })
 
@@ -273,6 +295,32 @@ def parse_fantasypros_ros(fpros_json, teams=None):
 
     return ros_map
 
+def resolve_ros(teams, fpros_json=None, ros_strength=None):
+    """
+    Choose the rest-of-season data source.
+
+    Returns:
+        tuple: (ros_strength_map, ros_ranks) — values to display and ranks to score with.
+    """
+    if fpros_json:
+        # FantasyPros already provides ranks, so display and scoring use the same numbers.
+        ros_ranks = parse_fantasypros_ros(fpros_json, teams=teams)
+        return ros_ranks.copy(), ros_ranks
+    if ros_strength is not None:
+        return ros_strength, rank_stat(ros_strength, reverse=True)
+    # For historical weeks where ROS data is not available, neutralize ROS scoring.
+    return {team["id"]: "N/A" for team in teams}, {team["id"]: 1 for team in teams}
+
+
+def build_weights(current_week, weights_override=None):
+    """Category weights for the given week, with the record weight scaled up as the season progresses."""
+    weights = BASE_WEIGHTS.copy()
+    weights["record"] *= EARLY_RECORD_MULTIPLIERS.get(max(current_week, 1), FULL_RECORD_MULTIPLIER)
+    if weights_override:
+        weights.update(weights_override)
+    return weights
+
+
 def calculate_power_rankings(
     data, ros_strength=None, fpros_json=None, weights_override=None, target_week=None
 ):
@@ -288,9 +336,14 @@ def calculate_power_rankings(
     Args:
         data (dict): Dictionary containing 'teams' (list of team dicts) and
                      'schedule' (list of matchup dicts).
-        ros_strength (dict, optional): Rest-of-season roster strength mapping
-                                       keyed by team ID. If not provided, a
-                                       default of 50 is used for each team.
+        ros_strength (dict, optional): Rest-of-season roster strength keyed by team ID
+                                       (higher is better). Ignored if fpros_json is given.
+        fpros_json (dict, optional): FantasyPros league analysis JSON; its ranks are used
+                                     for ROS strength when provided.
+        weights_override (dict, optional): Category weights that replace the defaults.
+        target_week (int, optional): Only use matchups up to and including this week.
+
+    If neither ROS source is provided, ROS shows "N/A" and does not affect scoring.
 
     Returns:
         list: Ranked list of team power score dictionaries (best team first).
@@ -305,60 +358,16 @@ def calculate_power_rankings(
     num_teams = len(teams)
     logger.info("Calculating power rankings for %s team(s)", num_teams)
 
-    # use FantasyPros ranks when provided
-    if fpros_json:
-        ros_ranks = parse_fantasypros_ros(fpros_json, teams=teams)
-        # use the same numeric rank for display (ros_strength_map) and for ranking
-        ros_strength_map = ros_ranks.copy()
-    elif ros_strength is not None:
-        ros_strength_map = ros_strength
-        ros_ranks = rank_stat(ros_strength_map, reverse=True)
-    else:
-        # For historical weeks where ROS data is not available, neutralize ROS scoring.
-        ros_strength_map = {team["id"]: "N/A" for team in teams}
-        ros_ranks = {team["id"]: 1 for team in teams}
-
     current_week = get_current_week(schedule)
+    weights = build_weights(current_week, weights_override)
+    ros_strength_map, ros_ranks = resolve_ros(teams, fpros_json=fpros_json, ros_strength=ros_strength)
 
-    # derive record multiplier consistently (week1=1.2, week2=2.4, week3+ = 3.0)
-    if current_week <= 1:
-        record_multiplier = 1.2
-    elif current_week == 2:
-        record_multiplier = 2.4
-    else:
-        record_multiplier = 3.0
-
-    base_weights = {
-        "record": 1.0,
-        "overall": 1.0,
-        "consistency": 1.0,
-        "ppg": 1.0,
-        "ros": 1.2,
-    }
-
-    weights = base_weights.copy()
-    weights["record"] = base_weights["record"] * record_multiplier
-    if weights_override:
-        weights.update(weights_override)
-
-    team_info = get_team_info(teams)
-    derived_records = derive_records_from_schedule(teams, schedule)
-    for team_id, info in team_info.items():
-        record = derived_records.get(team_id, {"wins": 0, "losses": 0, "ties": 0})
-        wins = record["wins"]
-        losses = record["losses"]
-        ties = record["ties"]
-        games_played = wins + losses + ties
-        info["record_str"] = f"{wins}-{losses}-{ties}"
-        info["record_score"] = (wins + 0.5 * ties) / games_played if games_played else 0
-        info["games_played"] = games_played
+    # Records come from the schedule (not teams[].record) so historical weeks are accurate.
+    team_info = get_team_info(teams, records=derive_records_from_schedule(teams, schedule))
     team_scores = calculate_team_scores(schedule)
-
     team_ppg, ppg_ranks = calculate_ppg(team_scores)
     consistency_scores, consistency_ranks = calculate_consistency(team_ppg, team_scores)
-
     overall_wins, overall_losses, overall_ranks = calculate_overall_wins_and_losses(schedule, num_teams)
-    record_ranks = rank_stat({tid: info["record_score"] for tid, info in team_info.items()}, reverse=True)
 
     stats = {
         "ppg": team_ppg,
@@ -370,7 +379,6 @@ def calculate_power_rankings(
         "overall_ranks": overall_ranks,
         "ros_strength": ros_strength_map,
         "ros_ranks": ros_ranks,
-        "record_ranks": record_ranks,
     }
 
     power_scores = build_power_scores(team_info, stats, weights, current_week)

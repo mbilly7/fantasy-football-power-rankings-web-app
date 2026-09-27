@@ -55,57 +55,37 @@
         <caption class="text-right text-muted">
             Last updated: {{ last_updated if last_updated else "Not available" }}
         </caption>
+        {% set columns = [
+            ("power_rank", "Rank", "number"),
+            ("team_name", "Team Name", none),
+            ("record", "Record", "record"),
+            ("overall_wins", "Overall Wins", "record"),
+            ("consistency", "Consistency", "number"),
+            ("ppg", "PPG", "number"),
+            ("ros_strength", "ROS Strength", "number"),
+            ("pr_score", "PR Score", "number"),
+        ] %}
         <thead class="thead-dark">
             <tr>
+                {% for key, label, sort_type in columns %}
                 <th>
-                    <button type="button" class="btn btn-link text-white p-0" data-sort-col="0" data-sort-type="number">
-                        Rank <span class="sort-indicator"></span>
+                    {% if sort_type %}
+                    <button type="button" class="btn btn-link text-white p-0" data-sort-col="{{ loop.index0 }}" data-sort-type="{{ sort_type }}">
+                        {{ label }} <span class="sort-indicator"></span>
                     </button>
+                    {% else %}
+                    {{ label }}
+                    {% endif %}
                 </th>
-                <th>Team Name</th>
-                <th>
-                    <button type="button" class="btn btn-link text-white p-0" data-sort-col="2" data-sort-type="record">
-                        Record <span class="sort-indicator"></span>
-                    </button>
-                </th>
-                <th>
-                    <button type="button" class="btn btn-link text-white p-0" data-sort-col="3" data-sort-type="record">
-                        Overall Wins <span class="sort-indicator"></span>
-                    </button>
-                </th>
-                <th>
-                    <button type="button" class="btn btn-link text-white p-0" data-sort-col="4" data-sort-type="number">
-                        Consistency <span class="sort-indicator"></span>
-                    </button>
-                </th>
-                <th>
-                    <button type="button" class="btn btn-link text-white p-0" data-sort-col="5" data-sort-type="number">
-                        PPG <span class="sort-indicator"></span>
-                    </button>
-                </th>
-                <th>
-                    <button type="button" class="btn btn-link text-white p-0" data-sort-col="6" data-sort-type="number">
-                        ROS Strength <span class="sort-indicator"></span>
-                    </button>
-                </th>
-                <th>
-                    <button type="button" class="btn btn-link text-white p-0" data-sort-col="7" data-sort-type="number">
-                        PR Score <span class="sort-indicator"></span>
-                    </button>
-                </th>
+                {% endfor %}
             </tr>
         </thead>
         <tbody>
             {% for team in teams %}
             <tr>
-                <td>{{ team.power_rank }}</td>
-                <td>{{ team.team_name }}</td>
-                <td>{{ team.record }}</td>
-                <td>{{ team.overall_wins }}</td>
-                <td>{{ team.consistency }}</td>
-                <td>{{ team.ppg }}</td>
-                <td>{{ team.ros_strength }}</td>
-                <td>{{ team.pr_score }}</td>
+                {% for key, label, sort_type in columns %}
+                <td>{{ team[key] }}</td>
+                {% endfor %}
             </tr>
             {% endfor %}
         </tbody>

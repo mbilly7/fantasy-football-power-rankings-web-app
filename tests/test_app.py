@@ -1,5 +1,5 @@
 from unittest.mock import patch, MagicMock
-from app import app as flask_app, fetch_espn_league_data, fetch_fantasypros_data
+from app import app as flask_app, fetch_espn_league_data, fetch_fantasypros_data, Snapshot
 
 
 @patch('app.requests.get')
@@ -49,7 +49,7 @@ def test_index_defaults_to_latest_cached_season_without_league_season(
 
     mock_discover_available_seasons.return_value = [2024, 2023]
     mock_get_available_seasons.return_value = [2024]
-    mock_ensure_week_snapshot.return_value = (True, 14, [1], 1)
+    mock_ensure_week_snapshot.return_value = Snapshot(season=2024, week=1, regular_season_weeks=14)
     mock_get_rankings.return_value = (
         [
             {
@@ -92,11 +92,9 @@ def test_index_falls_back_to_previous_season_when_current_has_no_completed_weeks
     mock_get_available_seasons.return_value = [2025]
 
     def ensure_side_effect(_league_id, season, **_kwargs):
-        if season == 2026:
-            return (False, 14, [], None)
         if season == 2025:
-            return (True, 14, [1], 17)
-        return (False, None, [], None)
+            return Snapshot(season=2025, week=17, regular_season_weeks=14)
+        return None
 
     mock_ensure_week_snapshot.side_effect = ensure_side_effect
     mock_get_rankings.return_value = (

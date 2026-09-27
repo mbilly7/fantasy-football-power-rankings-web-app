@@ -45,11 +45,10 @@ except Exception:
     raise
 
 def save_rankings(week, season, rankings):
-    session = Session()
-    deleted = session.query(WeeklyRankings).filter_by(week=week, season=season).delete()
-    entry = WeeklyRankings(week=week, season=season, rankings=json.dumps(rankings))
-    session.add(entry)
-    session.commit()
+    with Session() as session:
+        deleted = session.query(WeeklyRankings).filter_by(week=week, season=season).delete()
+        session.add(WeeklyRankings(week=week, season=season, rankings=json.dumps(rankings)))
+        session.commit()
     logger.info(
         "Saved %s ranking row(s) for season=%s week=%s (replaced %s existing row(s))",
         len(rankings),
@@ -57,130 +56,79 @@ def save_rankings(week, season, rankings):
         week,
         deleted,
     )
-    session.close()
 
-def get_latest_rankings(season):
-    session = Session()
-    entry = (
-        session.query(WeeklyRankings)
-        .filter_by(season=season)
-        .order_by(WeeklyRankings.updated_at.desc())
-        .first()
-    )
+
+def _load_rankings_entry(*order_by, **filters):
+    """
+    Return the first WeeklyRankings row matching `filters` under `order_by`, as
+    (rankings, updated_at, week), or (None, None, None) if there is no match.
+    """
+    with Session() as session:
+        entry = session.query(WeeklyRankings).filter_by(**filters).order_by(*order_by).first()
 
     if not entry:
-        logger.info("No cached rankings found for season=%s", season)
-        session.close()
-        return None, None
+        logger.info("No cached rankings found for %s", filters)
+        return None, None, None
 
-    rankings = json.loads(entry.rankings)
-    updated_at = entry.updated_at
-    logger.info(
-        "Loaded cached rankings for season=%s week=%s updated_at=%s",
-        season,
-        entry.week,
-        updated_at,
-    )
-    session.close()
+    logger.info("Loaded cached rankings for %s week=%s updated_at=%s", filters, entry.week, entry.updated_at)
+    return json.loads(entry.rankings), entry.updated_at, entry.week
+
+
+def get_latest_rankings(season):
+    """Most recently saved rankings for a season, as (rankings, updated_at)."""
+    rankings, updated_at, _ = _load_rankings_entry(WeeklyRankings.updated_at.desc(), season=season)
     return rankings, updated_at
 
 
 def get_latest_rankings_entry(season):
-    session = Session()
-    entry = (
-        session.query(WeeklyRankings)
-        .filter_by(season=season)
-        .order_by(WeeklyRankings.week.desc(), WeeklyRankings.updated_at.desc())
-        .first()
+    """Rankings for the highest saved week of a season, as (rankings, updated_at, week)."""
+    return _load_rankings_entry(
+        WeeklyRankings.week.desc(), WeeklyRankings.updated_at.desc(), season=season
     )
-
-    if not entry:
-        logger.info("No latest rankings entry found for season=%s", season)
-        session.close()
-        return None, None, None
-
-    rankings = json.loads(entry.rankings)
-    updated_at = entry.updated_at
-    week = entry.week
-    logger.info(
-        "Loaded latest rankings entry for season=%s week=%s updated_at=%s",
-        season,
-        week,
-        updated_at,
-    )
-    session.close()
-    return rankings, updated_at, week
 
 
 def get_rankings(season, week):
-    session = Session()
-    entry = (
-        session.query(WeeklyRankings)
-        .filter_by(season=season, week=week)
-        .order_by(WeeklyRankings.updated_at.desc())
-        .first()
+    """Rankings for one week of a season, as (rankings, updated_at)."""
+    rankings, updated_at, _ = _load_rankings_entry(
+        WeeklyRankings.updated_at.desc(), season=season, week=week
     )
-
-    if not entry:
-        logger.info("No cached rankings found for season=%s week=%s", season, week)
-        session.close()
-        return None, None
-
-    rankings = json.loads(entry.rankings)
-    updated_at = entry.updated_at
-    logger.info(
-        "Loaded cached rankings for season=%s week=%s updated_at=%s",
-        season,
-        week,
-        updated_at,
-    )
-    session.close()
     return rankings, updated_at
 
 
 def get_available_seasons():
-    session = Session()
-    seasons = [
-        int(season)
-        for (season,) in session.query(WeeklyRankings.season)
-        .distinct()
-        .order_by(WeeklyRankings.season.desc())
-        .all()
-    ]
-    session.close()
+    with Session() as session:
+        rows = session.query(WeeklyRankings.season).distinct().order_by(WeeklyRankings.season.desc()).all()
+    seasons = [int(season) for (season,) in rows]
     logger.info("Loaded %s available season(s)", len(seasons))
     return seasons
 
 
 def get_available_weeks(season):
-    session = Session()
-    weeks = [
-        int(week)
-        for (week,) in session.query(WeeklyRankings.week)
-        .filter_by(season=season)
-        .distinct()
-        .order_by(WeeklyRankings.week.asc())
-        .all()
-    ]
-    session.close()
+    with Session() as session:
+        rows = (
+            session.query(WeeklyRankings.week)
+            .filter_by(season=season)
+            .distinct()
+            .order_by(WeeklyRankings.week.asc())
+            .all()
+        )
+    weeks = [int(week) for (week,) in rows]
     logger.info("Loaded %s available week(s) for season=%s", len(weeks), season)
     return weeks
 
 
 def get_season_sync_status_map():
-    session = Session()
-    rows = session.query(SeasonSyncStatus).all()
-    status_map = {
-        int(row.season): {
-            "discovered": bool(row.discovered),
-            "backfilled": bool(row.backfilled),
-            "max_week_backfilled": row.max_week_backfilled,
-            "status": row.status,
+    with Session() as session:
+        rows = session.query(SeasonSyncStatus).all()
+        return {
+            int(row.season): {
+                "discovered": bool(row.discovered),
+                "backfilled": bool(row.backfilled),
+                "max_week_backfilled": row.max_week_backfilled,
+                "status": row.status,
+            }
+            for row in rows
         }
-        for row in rows
-    }
-    session.close()
-    return status_map
 
 
 def upsert_season_sync_status(
@@ -191,37 +139,36 @@ def upsert_season_sync_status(
     status=None,
     checked=True,
 ):
-    session = Session()
-    row = session.query(SeasonSyncStatus).filter_by(season=season).first()
-    if row is None:
-        row = SeasonSyncStatus(season=season)
-        session.add(row)
+    """Create or update a season's sync row. Fields left as None are not changed."""
+    now = datetime.now(timezone.utc)
+    with Session() as session:
+        row = session.query(SeasonSyncStatus).filter_by(season=season).first()
+        if row is None:
+            row = SeasonSyncStatus(season=season)
+            session.add(row)
 
-    if discovered is not None:
-        row.discovered = bool(discovered)
-    if backfilled is not None:
-        row.backfilled = bool(backfilled)
-    if max_week_backfilled is not None:
-        row.max_week_backfilled = int(max_week_backfilled)
-    if status is not None:
-        row.status = status
-    if checked:
-        row.last_checked_at = datetime.now(timezone.utc)
-    if backfilled:
-        row.last_backfilled_at = datetime.now(timezone.utc)
+        if discovered is not None:
+            row.discovered = bool(discovered)
+        if backfilled is not None:
+            row.backfilled = bool(backfilled)
+        if max_week_backfilled is not None:
+            row.max_week_backfilled = int(max_week_backfilled)
+        if status is not None:
+            row.status = status
+        if checked:
+            row.last_checked_at = now
+        if backfilled:
+            row.last_backfilled_at = now
 
-    session.commit()
-    session.close()
+        session.commit()
 
 
 def get_discovered_seasons():
-    session = Session()
-    seasons = [
-        int(season)
-        for (season,) in session.query(SeasonSyncStatus.season)
-        .filter_by(discovered=True)
-        .order_by(SeasonSyncStatus.season.desc())
-        .all()
-    ]
-    session.close()
-    return seasons
+    with Session() as session:
+        rows = (
+            session.query(SeasonSyncStatus.season)
+            .filter_by(discovered=True)
+            .order_by(SeasonSyncStatus.season.desc())
+            .all()
+        )
+    return [int(season) for (season,) in rows]
