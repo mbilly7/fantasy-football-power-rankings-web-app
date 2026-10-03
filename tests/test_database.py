@@ -1,9 +1,7 @@
-import pytest
 import json
 from datetime import datetime, timezone
 import database
 from database import (
-    Base,
     WeeklyRankings,
     save_rankings,
     get_rankings,
@@ -13,17 +11,6 @@ from database import (
     upsert_season_sync_status,
     get_discovered_seasons,
 )
-
-
-@pytest.fixture(autouse=True)
-def test_db():
-    """Point the database module at a fresh in-memory SQLite DB, then restore the previous binding."""
-    previous_bind = database.Session.kw.get("bind")
-    engine = database.init_db("sqlite://")
-    yield engine
-    Base.metadata.drop_all(engine)
-    engine.dispose()
-    database.Session.configure(bind=previous_bind)
 
 
 def test_save_rankings():

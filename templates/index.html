@@ -121,8 +121,33 @@
         </ul>
     </div>
 </div>
+<script type="application/json" id="season-week-options">{{ season_week_options | tojson }}</script>
 <script>
     (function () {
+        // Swap the week picker's options to match the chosen season. Keep the same week if the
+        // new season has it, otherwise default to that season's latest completed week.
+        const seasonSelect = document.getElementById("season-select");
+        const weekSelect = document.getElementById("week-select");
+        const weekOptionsData = document.getElementById("season-week-options");
+        const weekOptionsBySeason = weekOptionsData ? JSON.parse(weekOptionsData.textContent) : {};
+
+        if (seasonSelect && weekSelect) {
+            seasonSelect.addEventListener("change", function () {
+                const options = weekOptionsBySeason[seasonSelect.value];
+                const previousWeek = weekSelect.value;
+                weekSelect.innerHTML = "";
+
+                if (!options || !options.length) {
+                    // Week list not saved yet; the server picks the latest completed week.
+                    weekSelect.add(new Option("Latest week", "latest"));
+                    return;
+                }
+                options.forEach((option) => weekSelect.add(new Option(option.label, option.week)));
+                const keepWeek = options.some((option) => String(option.week) === previousWeek);
+                weekSelect.value = keepWeek ? previousWeek : String(options[options.length - 1].week);
+            });
+        }
+
         // Loading overlay + button lockout on form submit
         const form = document.querySelector("form");
         const overlay = document.getElementById("loading-overlay");

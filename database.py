@@ -13,7 +13,7 @@ Base = declarative_base()
 Session = sessionmaker()
 
 # Bump whenever power_rankings_generator changes its output, so cached weeks are recomputed.
-RANKINGS_VERSION = 2
+RANKINGS_VERSION = 3
 
 class WeeklyRankings(Base):
     __tablename__ = 'weekly_rankings'
@@ -219,3 +219,9 @@ def get_season_weeks(season):
     with Session() as session:
         row = session.get(SeasonWeeks, season)
         return json.loads(row.weeks) if row else None
+
+
+def get_all_season_weeks():
+    """Saved week picker options for every season that has them, as {season: options}."""
+    with Session() as session:
+        return {row.season: json.loads(row.weeks) for row in session.query(SeasonWeeks).all()}

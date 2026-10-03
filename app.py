@@ -16,6 +16,7 @@ from database import (
     get_available_weeks,
     get_discovered_seasons,
     get_season_weeks,
+    get_all_season_weeks,
     save_season_weeks,
     get_season_sync_status_map,
     upsert_season_sync_status,
@@ -174,6 +175,14 @@ def extract_completed_weeks(season_data):
     )
 
 
+def is_season_in_progress(season_data):
+    """True while the schedule still has unplayed head-to-head matchups (byes never get a winner)."""
+    return any(
+        "away" in matchup and matchup.get("winner") in (None, "UNDECIDED")
+        for matchup in season_data.get("schedule", [])
+    )
+
+
 def describe_completed_weeks(season_data):
     """
     Week picker options for every completed matchup period, oldest first.
@@ -211,12 +220,15 @@ def is_transient_failure(status):
     return status in ("probe_error", "snapshot_fetch_error") or status.startswith(("http_5", "snapshot_http_5"))
 
 
-def needs_probe(season, known, now):
-    """Whether discovery should ask ESPN about a season, given its saved sync status (or None)."""
+def needs_probe(season, known, now, has_week_list=True):
+    """
+    Whether discovery should ask ESPN about a season, given its saved sync status (or None).
+    Discovered seasons are re-probed once if their week picker options were never saved.
+    """
     if known is None:
         return True
     if known["discovered"]:
-        return False
+        return not has_week_list
     if is_transient_failure(known["status"] or ""):
         return True
     # The current season starts out unavailable (league not renewed yet, or no games played),
@@ -253,13 +265,14 @@ def probe_season(league_id, season, swid=None, espn_s2=None):
 
 def discover_available_seasons(league_id, swid=None, espn_s2=None):
     sync_map = get_season_sync_status_map()
+    seasons_with_week_lists = set(get_all_season_weeks())
     discovered = []
 
     now = datetime.now(timezone.utc)
 
     for season in range(now.year, EARLIEST_PLAUSIBLE_ESPN_SEASON - 1, -1):
         known = sync_map.get(season)
-        if not needs_probe(season, known, now):
+        if not needs_probe(season, known, now, has_week_list=season in seasons_with_week_lists):
             if known["discovered"]:
                 discovered.append(season)
             continue
@@ -329,8 +342,11 @@ def ensure_week_snapshot(league_id, season, requested_week=None, swid=None, espn
         mark_season_backfilled(season, status="snapshot_cached")
         return snapshot
 
-    # FantasyPros only offers current ROS data, so it is only meaningful for the latest week.
-    fpros_data = fetch_fantasypros_data(fantasypros_key) if target_week == latest_week else None
+    # FantasyPros only offers current ROS data, so it only applies to the latest week of a season
+    # still being played. A finished season's final week is its "latest" week too, but today's
+    # ROS rankings say nothing about it.
+    use_ros = target_week == latest_week and is_season_in_progress(espn_data)
+    fpros_data = fetch_fantasypros_data(fantasypros_key) if use_ros else None
     logger.info("Calculating rankings for season=%s week=%s", season, target_week)
     weekly_rankings = calculate_power_rankings(espn_data, fpros_json=fpros_data, target_week=target_week)
     save_rankings(target_week, season, weekly_rankings)
@@ -447,7 +463,12 @@ def index():
         logger.error("Rankings missing from DB after snapshot — season=%s week=%s", snapshot.season, snapshot.week)
         raise RequestError("Unable to load rankings from cache after calculation", 500)
 
+    available_seasons = sorted(set(known_seasons + [snapshot.season]), reverse=True)
+    saved_week_options = get_all_season_weeks()
+    # Lets the page swap the week picker's options when a different season is chosen.
+    season_week_options = {season: saved_week_options.get(season) for season in available_seasons}
     week_options = get_week_options(snapshot.season)
+    season_week_options[snapshot.season] = week_options
     week_labels = {option["week"]: option["label"] for option in week_options}
 
     logger.info("Rendering rankings for season=%s week=%s", snapshot.season, snapshot.week)
@@ -455,8 +476,9 @@ def index():
         "index.html",
         teams=ranked_teams,
         last_updated=format_last_updated(saved_updated_at),
-        available_seasons=sorted(set(known_seasons + [snapshot.season]), reverse=True),
+        available_seasons=available_seasons,
         week_options=week_options,
+        season_week_options=season_week_options,
         selected_season=snapshot.season,
         selected_week=snapshot.week,
         selected_week_label=week_labels.get(snapshot.week, f"Week {snapshot.week}"),

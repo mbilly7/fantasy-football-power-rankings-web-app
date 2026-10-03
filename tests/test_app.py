@@ -33,6 +33,7 @@ def test_fetch_fantasypros_data_no_key(mock_get):
     mock_get.assert_not_called()
 
 
+@patch("app.get_all_season_weeks", return_value={})
 @patch("app.get_season_weeks")
 @patch("app.get_rankings")
 @patch("app.ensure_week_snapshot")
@@ -44,6 +45,7 @@ def test_index_defaults_to_latest_cached_season_without_league_season(
     mock_ensure_week_snapshot,
     mock_get_rankings,
     mock_get_season_weeks,
+    _mock_get_all_season_weeks,
     monkeypatch,
 ):
     monkeypatch.setenv("LEAGUE_ID", "123")
@@ -77,6 +79,7 @@ def test_index_defaults_to_latest_cached_season_without_league_season(
     mock_get_rankings.assert_called_once_with(2024, 1)
 
 
+@patch("app.get_all_season_weeks", return_value={})
 @patch("app.get_season_weeks")
 @patch("app.get_rankings")
 @patch("app.ensure_week_snapshot")
@@ -88,6 +91,7 @@ def test_index_falls_back_to_previous_season_when_current_has_no_completed_weeks
     mock_ensure_week_snapshot,
     mock_get_rankings,
     mock_get_season_weeks,
+    _mock_get_all_season_weeks,
     monkeypatch,
 ):
     monkeypatch.setenv("LEAGUE_ID", "123")
@@ -202,3 +206,30 @@ def test_describe_completed_weeks_labels_playoffs_and_skips_unplayed_weeks():
         {"week": 2, "label": "Week 2"},
         {"week": 3, "label": "Playoffs Round 1 (Weeks 3–4)"},
     ]
+
+
+def test_is_season_in_progress_ignores_byes():
+    from app import is_season_in_progress
+
+    finished = {"schedule": [
+        {"matchupPeriodId": 17, "home": {"teamId": 1}, "away": {"teamId": 2}, "winner": "HOME"},
+        {"matchupPeriodId": 15, "home": {"teamId": 3}, "winner": "UNDECIDED"},  # playoff bye
+    ]}
+    in_progress = {"schedule": finished["schedule"] + [
+        {"matchupPeriodId": 18, "home": {"teamId": 1}, "away": {"teamId": 3}, "winner": "UNDECIDED"},
+    ]}
+
+    assert not is_season_in_progress(finished)
+    assert is_season_in_progress(in_progress)
+
+
+def test_needs_probe_backfills_missing_week_list_once():
+    from datetime import datetime, timezone
+    from app import needs_probe
+
+    now = datetime(2026, 10, 2, tzinfo=timezone.utc)
+    known = {"discovered": True, "status": "snapshot_computed", "last_checked_at": None}
+
+    assert needs_probe(2019, known, now, has_week_list=False)
+    assert not needs_probe(2019, known, now, has_week_list=True)
+
