@@ -35,6 +35,9 @@ app.logger.setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 init_db()
 EARLIEST_PLAUSIBLE_ESPN_SEASON = 2000
+# ESPN's season endpoint 404s for seasons before this; they're only served by the leagueHistory endpoint.
+FIRST_SEASON_ENDPOINT_SEASON = 2018
+ESPN_FFL_API = "https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl"
 # How often to re-check the current season with ESPN while it has no completed weeks yet.
 CURRENT_SEASON_REPROBE_INTERVAL = timedelta(hours=1)
 
@@ -99,8 +102,13 @@ def fetch_espn_league_data(league_id, league_season, swid=None, espn_s2=None, ti
     Returns:
         dict: Parsed JSON response.
     """
-    url = f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{league_season}/segments/0/leagues/{league_id}"
     params = {"view": ["mMatchup", "mTeam", "mMatchupScore"]}
+    is_history_season = int(league_season) < FIRST_SEASON_ENDPOINT_SEASON
+    if is_history_season:
+        url = f"{ESPN_FFL_API}/leagueHistory/{league_id}"
+        params["seasonId"] = league_season
+    else:
+        url = f"{ESPN_FFL_API}/seasons/{league_season}/segments/0/leagues/{league_id}"
     cookies = {}
     if swid:
         cookies["SWID"] = swid
@@ -111,7 +119,11 @@ def fetch_espn_league_data(league_id, league_season, swid=None, espn_s2=None, ti
     resp = requests.get(url, params=params, cookies=cookies, timeout=timeout)
     resp.raise_for_status()
     logger.info("Fetched ESPN league data for league_id=%s season=%s", league_id, league_season)
-    return resp.json()
+    data = resp.json()
+    if is_history_season:
+        # leagueHistory returns a list of matching seasons (empty if the league didn't exist yet).
+        return data[0] if data else {}
+    return data
 
 def fetch_fantasypros_data(api_key=None, timeout=10):
     """
@@ -217,7 +229,9 @@ def describe_completed_weeks(season_data):
 
 def is_transient_failure(status):
     # A 404 means ESPN has no record of the season; auth/network errors may have been transient.
-    return status in ("probe_error", "snapshot_fetch_error") or status.startswith(("http_5", "snapshot_http_5"))
+    return status in ("probe_error", "snapshot_fetch_error") or status.startswith(
+        ("http_5", "history_http_5", "snapshot_http_5")
+    )
 
 
 def needs_probe(season, known, now, has_week_list=True):
@@ -230,6 +244,9 @@ def needs_probe(season, known, now, has_week_list=True):
     if known["discovered"]:
         return not has_week_list
     if is_transient_failure(known["status"] or ""):
+        return True
+    if season < FIRST_SEASON_ENDPOINT_SEASON and (known["status"] or "").startswith("http_"):
+        # Saved by the season endpoint, which can't serve this season. Retry once via leagueHistory.
         return True
     # The current season starts out unavailable (league not renewed yet, or no games played),
     # so unlike past seasons it can't be written off. Re-check it periodically.
@@ -245,8 +262,11 @@ def needs_probe(season, known, now, has_week_list=True):
 
 def probe_season(league_id, season, swid=None, espn_s2=None):
     """Ask ESPN whether a season has completed weeks, recording the result. Returns True if it does."""
+    # History seasons record their own status prefix, so 404s saved before they were fetched from
+    # leagueHistory ("http_404") can be told apart and retried (see needs_probe).
+    http_status_prefix = "history_http_" if season < FIRST_SEASON_ENDPOINT_SEASON else "http_"
     data = fetch_season_or_record_failure(
-        league_id, season, swid, espn_s2, http_status_prefix="http_", error_status="probe_error"
+        league_id, season, swid, espn_s2, http_status_prefix=http_status_prefix, error_status="probe_error"
     )
     if data is None:
         return False

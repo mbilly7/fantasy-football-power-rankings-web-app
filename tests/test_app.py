@@ -233,3 +233,32 @@ def test_needs_probe_backfills_missing_week_list_once():
     assert needs_probe(2019, known, now, has_week_list=False)
     assert not needs_probe(2019, known, now, has_week_list=True)
 
+
+
+@patch('app.requests.get')
+def test_fetch_espn_league_data_uses_league_history_before_2018(mock_get):
+    mock_response = MagicMock()
+    mock_response.raise_for_status.return_value = None
+    mock_response.json.return_value = [{"seasonId": 2017, "teams": [], "schedule": []}]
+    mock_get.return_value = mock_response
+
+    data = fetch_espn_league_data("123", 2017)
+
+    assert data == {"seasonId": 2017, "teams": [], "schedule": []}
+    url = mock_get.call_args.args[0]
+    assert url.endswith("/leagueHistory/123")
+    assert mock_get.call_args.kwargs["params"]["seasonId"] == 2017
+
+
+def test_needs_probe_retries_pre_2018_404s_from_old_endpoint_once():
+    from datetime import datetime, timezone
+    from app import needs_probe
+
+    now = datetime(2026, 10, 2, tzinfo=timezone.utc)
+    def status(state):
+        return {"discovered": False, "status": state, "last_checked_at": None}
+
+    assert needs_probe(2017, status("http_404"), now)  # from the season endpoint
+    assert not needs_probe(2017, status("history_http_404"), now)  # leagueHistory said no
+    assert needs_probe(2017, status("history_http_503"), now)  # transient
+    assert not needs_probe(2018, status("http_404"), now)
