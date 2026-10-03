@@ -2,7 +2,7 @@ import os
 import logging
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 import requests
 from flask import Flask, render_template, request
@@ -32,6 +32,8 @@ logger = logging.getLogger(__name__)
 init_db()
 EARLIEST_PLAUSIBLE_ESPN_SEASON = 2000
 DEFAULT_REGULAR_SEASON_WEEKS = 14
+# How often to re-check the current season with ESPN while it has no completed weeks yet.
+CURRENT_SEASON_REPROBE_INTERVAL = timedelta(hours=1)
 
 
 @dataclass(frozen=True)
@@ -186,7 +188,27 @@ def get_regular_season_weeks(season_data):
 
 def is_transient_failure(status):
     # A 404 means ESPN has no record of the season; auth/network errors may have been transient.
-    return status == "probe_error" or status.startswith("http_5")
+    return status in ("probe_error", "snapshot_fetch_error") or status.startswith(("http_5", "snapshot_http_5"))
+
+
+def needs_probe(season, known, now):
+    """Whether discovery should ask ESPN about a season, given its saved sync status (or None)."""
+    if known is None:
+        return True
+    if known["discovered"]:
+        return False
+    if is_transient_failure(known["status"] or ""):
+        return True
+    # The current season starts out unavailable (league not renewed yet, or no games played),
+    # so unlike past seasons it can't be written off. Re-check it periodically.
+    if season == now.year:
+        last_checked_at = known.get("last_checked_at")
+        if last_checked_at is None:
+            return True
+        if last_checked_at.tzinfo is None:  # SQLite returns naive datetimes; they are stored as UTC
+            last_checked_at = last_checked_at.replace(tzinfo=timezone.utc)
+        return now - last_checked_at >= CURRENT_SEASON_REPROBE_INTERVAL
+    return False
 
 
 def probe_season(league_id, season, swid=None, espn_s2=None):
@@ -212,14 +234,16 @@ def discover_available_seasons(league_id, swid=None, espn_s2=None):
     sync_map = get_season_sync_status_map()
     discovered = []
 
-    for season in range(current_year(), EARLIEST_PLAUSIBLE_ESPN_SEASON - 1, -1):
+    now = datetime.now(timezone.utc)
+
+    for season in range(now.year, EARLIEST_PLAUSIBLE_ESPN_SEASON - 1, -1):
         known = sync_map.get(season)
-        if known is not None and not is_transient_failure(known.get("status", "")):
-            if known.get("discovered", False):
+        if not needs_probe(season, known, now):
+            if known["discovered"]:
                 discovered.append(season)
             continue
         if known is not None:
-            logger.info("Season %s: re-probing after prior transient failure (status=%s)", season, known["status"])
+            logger.info("Season %s: re-probing (previous status=%s)", season, known["status"])
 
         if probe_season(league_id, season, swid=swid, espn_s2=espn_s2):
             discovered.append(season)

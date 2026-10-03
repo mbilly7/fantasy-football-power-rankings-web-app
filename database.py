@@ -125,6 +125,7 @@ def get_season_sync_status_map():
                 "backfilled": bool(row.backfilled),
                 "max_week_backfilled": row.max_week_backfilled,
                 "status": row.status,
+                "last_checked_at": row.last_checked_at,
             }
             for row in rows
         }

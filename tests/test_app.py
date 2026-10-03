@@ -149,3 +149,27 @@ def test_discover_available_seasons_backtracks_until_misses(
     assert 2024 in seasons and 2023 in seasons
     assert seasons == sorted(seasons, reverse=True)
     assert mock_upsert_season_sync_status.call_count >= 2
+
+def test_needs_probe_rechecks_current_season_until_discovered():
+    from datetime import datetime, timedelta, timezone
+    from app import needs_probe
+
+    now = datetime(2026, 10, 2, 12, 0, tzinfo=timezone.utc)
+    def status(state, checked_ago, discovered=False):
+        # Naive, like SQLite returns
+        return {"discovered": discovered, "status": state, "last_checked_at": (now - checked_ago).replace(tzinfo=None)}
+
+    # Current season checked before games were played: re-check once the interval passes
+    assert needs_probe(2026, status("no_completed_weeks", timedelta(days=47)), now)
+    assert needs_probe(2026, status("http_404", timedelta(hours=2)), now)
+    assert not needs_probe(2026, status("no_completed_weeks", timedelta(minutes=10)), now)
+    # Discovered seasons and definitive results for past seasons are final
+    assert not needs_probe(2026, status("available", timedelta(days=1), discovered=True), now)
+    assert not needs_probe(2025, status("no_completed_weeks", timedelta(days=47)), now)
+    assert not needs_probe(2019, status("http_404", timedelta(days=47)), now)
+    # Unknown seasons and transient failures are always probed
+    assert needs_probe(2026, None, now)
+    assert needs_probe(2024, status("probe_error", timedelta(minutes=1)), now)
+    assert needs_probe(2024, status("snapshot_fetch_error", timedelta(minutes=1)), now)
+    assert needs_probe(2024, status("snapshot_http_503", timedelta(minutes=1)), now)
+    assert not needs_probe(2024, status("snapshot_http_404", timedelta(minutes=1)), now)
