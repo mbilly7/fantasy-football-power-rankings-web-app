@@ -153,3 +153,39 @@ def test_season_sync_status_tracking():
     assert status_map[2024]["backfilled"] is True
     assert status_map[2024]["max_week_backfilled"] == 7
     assert get_discovered_seasons() == [2024]
+
+
+def test_rankings_from_older_version_count_as_not_cached():
+    save_rankings(week=1, season=2024, rankings=[{"team_id": 1}])
+    with database.Session() as session:
+        session.query(WeeklyRankings).update({"version": database.RANKINGS_VERSION - 1})
+        session.commit()
+
+    assert get_rankings(season=2024, week=1) == (None, None)
+
+
+def test_season_weeks_round_trip():
+    weeks = [{"week": 1, "label": "Week 1"}, {"week": 15, "label": "Playoffs Round 1 (Week 15)"}]
+
+    assert database.get_season_weeks(2025) is None
+    database.save_season_weeks(2025, weeks)
+    database.save_season_weeks(2025, weeks[:1])
+    assert database.get_season_weeks(2025) == weeks[:1]
+
+
+def test_init_db_adds_version_column_to_existing_table(tmp_path):
+    from sqlalchemy import create_engine, inspect, text
+
+    url = f"sqlite:///{tmp_path / 'old.db'}"
+    with create_engine(url).begin() as connection:
+        connection.execute(text(
+            "CREATE TABLE weekly_rankings (id INTEGER PRIMARY KEY, week INTEGER, season INTEGER, "
+            "rankings TEXT, updated_at DATETIME)"
+        ))
+        connection.execute(text("INSERT INTO weekly_rankings (week, season, rankings) VALUES (1, 2019, '[]')"))
+
+    engine = database.init_db(url)
+
+    assert "version" in {c["name"] for c in inspect(engine).get_columns("weekly_rankings")}
+    assert get_rankings(season=2019, week=1) == (None, None)  # pre-version rows are recomputed
+    engine.dispose()

@@ -39,8 +39,8 @@
 
         <label class="mr-2" for="week-select">Week</label>
         <select id="week-select" name="week" class="form-control mr-3">
-            {% for week in available_weeks %}
-            <option value="{{ week }}" {% if (selected_week == week) or (selected_week is none and loop.last) %}selected{% endif %}>Week {{ week }}</option>
+            {% for option in week_options %}
+            <option value="{{ option.week }}" {% if option.week == selected_week %}selected{% endif %}>{{ option.label }}</option>
             {% endfor %}
         </select>
 
@@ -48,7 +48,7 @@
     </form>
 
     <p class="text-muted">
-        Showing season {{ selected_season }}, week {{ displayed_week if displayed_week else "latest available" }}.
+        Showing season {{ selected_season }}, {{ selected_week_label }}.
     </p>
 
     <table id="rankings-table" class="table table-striped table-bordered table-hover">

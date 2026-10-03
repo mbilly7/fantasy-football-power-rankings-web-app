@@ -33,6 +33,7 @@ def test_fetch_fantasypros_data_no_key(mock_get):
     mock_get.assert_not_called()
 
 
+@patch("app.get_season_weeks")
 @patch("app.get_rankings")
 @patch("app.ensure_week_snapshot")
 @patch("app.get_available_seasons")
@@ -42,6 +43,7 @@ def test_index_defaults_to_latest_cached_season_without_league_season(
     mock_get_available_seasons,
     mock_ensure_week_snapshot,
     mock_get_rankings,
+    mock_get_season_weeks,
     monkeypatch,
 ):
     monkeypatch.setenv("LEAGUE_ID", "123")
@@ -49,7 +51,8 @@ def test_index_defaults_to_latest_cached_season_without_league_season(
 
     mock_discover_available_seasons.return_value = [2024, 2023]
     mock_get_available_seasons.return_value = [2024]
-    mock_ensure_week_snapshot.return_value = Snapshot(season=2024, week=1, regular_season_weeks=14)
+    mock_ensure_week_snapshot.return_value = Snapshot(season=2024, week=1)
+    mock_get_season_weeks.return_value = [{"week": 1, "label": "Week 1"}]
     mock_get_rankings.return_value = (
         [
             {
@@ -70,10 +73,11 @@ def test_index_defaults_to_latest_cached_season_without_league_season(
     response = client.get("/")
 
     assert response.status_code == 200
-    assert b"Showing season 2024, week 1." in response.data
+    assert b"Showing season 2024, Week 1." in response.data
     mock_get_rankings.assert_called_once_with(2024, 1)
 
 
+@patch("app.get_season_weeks")
 @patch("app.get_rankings")
 @patch("app.ensure_week_snapshot")
 @patch("app.get_available_seasons")
@@ -83,6 +87,7 @@ def test_index_falls_back_to_previous_season_when_current_has_no_completed_weeks
     mock_get_available_seasons,
     mock_ensure_week_snapshot,
     mock_get_rankings,
+    mock_get_season_weeks,
     monkeypatch,
 ):
     monkeypatch.setenv("LEAGUE_ID", "123")
@@ -93,10 +98,13 @@ def test_index_falls_back_to_previous_season_when_current_has_no_completed_weeks
 
     def ensure_side_effect(_league_id, season, **_kwargs):
         if season == 2025:
-            return Snapshot(season=2025, week=17, regular_season_weeks=14)
+            return Snapshot(season=2025, week=17)
         return None
 
     mock_ensure_week_snapshot.side_effect = ensure_side_effect
+    mock_get_season_weeks.return_value = [{"week": 14, "label": "Week 14"}] + [
+        {"week": w, "label": f"Playoffs Round {w - 14} (Week {w})"} for w in (15, 16, 17)
+    ]
     mock_get_rankings.return_value = (
         [
             {
@@ -117,7 +125,7 @@ def test_index_falls_back_to_previous_season_when_current_has_no_completed_weeks
     response = client.get("/")
 
     assert response.status_code == 200
-    assert b"Showing season 2025, week 17." in response.data
+    assert b"Showing season 2025, Playoffs Round 3 (Week 17)." in response.data
     mock_get_rankings.assert_called_once_with(2025, 17)
 
 
@@ -173,3 +181,24 @@ def test_needs_probe_rechecks_current_season_until_discovered():
     assert needs_probe(2024, status("snapshot_fetch_error", timedelta(minutes=1)), now)
     assert needs_probe(2024, status("snapshot_http_503", timedelta(minutes=1)), now)
     assert not needs_probe(2024, status("snapshot_http_404", timedelta(minutes=1)), now)
+
+
+def test_describe_completed_weeks_labels_playoffs_and_skips_unplayed_weeks():
+    from app import describe_completed_weeks
+
+    def matchup(week, winner="HOME", tier="NONE", periods=None):
+        periods = periods or [week]
+        side = lambda tid: {"teamId": tid, "totalPoints": 100.0, "pointsByScoringPeriod": {str(p): 50.0 for p in periods}}
+        return {"matchupPeriodId": week, "playoffTierType": tier, "winner": winner, "home": side(1), "away": side(2)}
+
+    season = {"schedule": [
+        matchup(1), matchup(2),
+        matchup(3, tier="WINNERS_BRACKET", periods=[3, 4]),  # two-week playoff round
+        matchup(4, tier="WINNERS_BRACKET", periods=[5, 6], winner="UNDECIDED"),  # not played yet
+    ]}
+
+    assert describe_completed_weeks(season) == [
+        {"week": 1, "label": "Week 1"},
+        {"week": 2, "label": "Week 2"},
+        {"week": 3, "label": "Playoffs Round 1 (Weeks 3–4)"},
+    ]

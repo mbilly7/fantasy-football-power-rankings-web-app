@@ -87,9 +87,7 @@ def test_calculate_consistency(sample_schedule_with_scores):
 
 
 def test_calculate_overall_wins_and_losses(sample_schedule_with_scores):
-    overall_wins, overall_losses, overall_ranks = calculate_overall_wins_and_losses(
-        sample_schedule_with_scores, 4
-    )
+    overall_wins, overall_losses, overall_ranks = calculate_overall_wins_and_losses(sample_schedule_with_scores)
     assert overall_wins[1] == 3
     assert overall_losses[1] == 0
     assert overall_ranks[1] == 1 
@@ -207,3 +205,50 @@ def test_calculate_power_rankings_uses_na_for_ros_without_fpros():
     assert ros_values[1] == "N/A"
     assert ros_values[2] == "N/A"
     
+
+def test_two_week_playoff_matchup_counts_as_two_weeks_and_not_in_record():
+    teams = [
+        {"id": 1, "name": "Team A", "record": {"overall": {"wins": 0, "losses": 0, "ties": 0}}},
+        {"id": 2, "name": "Team B", "record": {"overall": {"wins": 0, "losses": 0, "ties": 0}}},
+    ]
+    schedule = [
+        {
+            "matchupPeriodId": 1,
+            "playoffTierType": "NONE",
+            "home": {"teamId": 1, "totalPoints": 100.0, "pointsByScoringPeriod": {"1": 100.0}},
+            "away": {"teamId": 2, "totalPoints": 90.0, "pointsByScoringPeriod": {"1": 90.0}},
+            "winner": "HOME",
+        },
+        {
+            "matchupPeriodId": 2,
+            "playoffTierType": "WINNERS_BRACKET",
+            "home": {"teamId": 1, "totalPoints": 210.0, "pointsByScoringPeriod": {"2": 100.0, "3": 110.0}},
+            "away": {"teamId": 2, "totalPoints": 230.0, "pointsByScoringPeriod": {"2": 120.0, "3": 110.0}},
+            "winner": "AWAY",
+        },
+    ]
+
+    ranked = {t["team_id"]: t for t in calculate_power_rankings({"teams": teams, "schedule": schedule}, target_week=2)}
+
+    # Three NFL weeks of scoring, not two matchups
+    assert ranked[1]["ppg"] == round((100 + 100 + 110) / 3, 2)
+    assert ranked[2]["ppg"] == round((90 + 120 + 110) / 3, 2)
+    # The playoff loss doesn't change the regular-season record
+    assert ranked[1]["record"] == "1-0-0"
+    assert ranked[2]["record"] == "0-1-0"
+
+
+def test_overall_wins_include_teams_on_bye():
+    schedule = [
+        {
+            "matchupPeriodId": 1,
+            "home": {"teamId": 1, "totalPoints": 100.0},
+            "away": {"teamId": 2, "totalPoints": 90.0},
+            "winner": "HOME",
+        },
+        {"matchupPeriodId": 1, "home": {"teamId": 3, "totalPoints": 95.0}, "winner": "UNDECIDED"},  # bye
+    ]
+    overall_wins, overall_losses, _ = calculate_overall_wins_and_losses(schedule)
+    assert (overall_wins[1], overall_losses[1]) == (2, 0)
+    assert (overall_wins[3], overall_losses[3]) == (1, 1)
+    assert (overall_wins[2], overall_losses[2]) == (0, 2)

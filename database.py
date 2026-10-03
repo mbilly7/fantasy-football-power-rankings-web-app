@@ -2,7 +2,7 @@ import logging
 import json
 from datetime import datetime, timezone
 import os
-from sqlalchemy import create_engine, Column, Integer, DateTime, Text, text, UniqueConstraint, Boolean
+from sqlalchemy import create_engine, inspect, Column, Integer, DateTime, Text, text, UniqueConstraint, Boolean
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -11,6 +11,9 @@ Base = declarative_base()
 
 # Bound to an engine by init_db().
 Session = sessionmaker()
+
+# Bump whenever power_rankings_generator changes its output, so cached weeks are recomputed.
+RANKINGS_VERSION = 2
 
 class WeeklyRankings(Base):
     __tablename__ = 'weekly_rankings'
@@ -21,6 +24,7 @@ class WeeklyRankings(Base):
     week = Column(Integer)
     season = Column(Integer)
     rankings = Column(Text)  # JSON string
+    version = Column(Integer, nullable=True)  # RANKINGS_VERSION used to calculate the row
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
@@ -33,6 +37,23 @@ class SeasonSyncStatus(Base):
     status = Column(Text, default="unknown")
     last_checked_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     last_backfilled_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class SeasonWeeks(Base):
+    """The completed weeks of a season as shown in the week picker, saved from the last ESPN fetch."""
+    __tablename__ = "season_weeks"
+    season = Column(Integer, primary_key=True)
+    weeks = Column(Text)  # JSON list of {"week": int, "label": str}
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+def _add_missing_columns(engine):
+    """create_all() only creates missing tables, so add columns introduced after a table was created."""
+    existing = {column["name"] for column in inspect(engine).get_columns("weekly_rankings")}
+    if "version" not in existing:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE weekly_rankings ADD COLUMN version INTEGER"))
+        logger.info("Added weekly_rankings.version column")
 
 
 def init_db(database_url=None):
@@ -56,6 +77,7 @@ def init_db(database_url=None):
 
     try:
         Base.metadata.create_all(engine)
+        _add_missing_columns(engine)
         with engine.connect() as connection:
             connection.execute(text("SELECT 1"))
     except Exception:
@@ -70,7 +92,9 @@ def init_db(database_url=None):
 def save_rankings(week, season, rankings):
     with Session() as session:
         deleted = session.query(WeeklyRankings).filter_by(week=week, season=season).delete()
-        session.add(WeeklyRankings(week=week, season=season, rankings=json.dumps(rankings)))
+        session.add(
+            WeeklyRankings(week=week, season=season, rankings=json.dumps(rankings), version=RANKINGS_VERSION)
+        )
         session.commit()
     logger.info(
         "Saved %s ranking row(s) for season=%s week=%s (replaced %s existing row(s))",
@@ -82,9 +106,16 @@ def save_rankings(week, season, rankings):
 
 
 def get_rankings(season, week):
-    """Rankings for one week of a season, as (rankings, updated_at), or (None, None) if not cached."""
+    """
+    Rankings for one week of a season, as (rankings, updated_at), or (None, None) if not cached.
+    Rows calculated by an older RANKINGS_VERSION count as not cached.
+    """
     with Session() as session:
-        entry = session.query(WeeklyRankings).filter_by(season=season, week=week).first()
+        entry = (
+            session.query(WeeklyRankings)
+            .filter_by(season=season, week=week, version=RANKINGS_VERSION)
+            .first()
+        )
 
     if not entry:
         logger.info("No cached rankings found for season=%s week=%s", season, week)
@@ -172,3 +203,19 @@ def get_discovered_seasons():
             .all()
         )
     return [int(season) for (season,) in rows]
+
+
+def save_season_weeks(season, weeks):
+    with Session() as session:
+        row = session.get(SeasonWeeks, season) or SeasonWeeks(season=season)
+        row.weeks = json.dumps(weeks)
+        row.updated_at = datetime.now(timezone.utc)
+        session.add(row)
+        session.commit()
+
+
+def get_season_weeks(season):
+    """The saved week picker options for a season, or None if the season hasn't been fetched yet."""
+    with Session() as session:
+        row = session.get(SeasonWeeks, season)
+        return json.loads(row.weeks) if row else None

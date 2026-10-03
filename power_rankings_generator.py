@@ -68,11 +68,18 @@ def get_team_info(teams, records=None):
     return team_info
 
 
+def is_playoff_matchup(match):
+    """Playoff and consolation matchups have a playoffTierType other than NONE."""
+    return match.get("playoffTierType", "NONE") != "NONE"
+
+
 def derive_records_from_schedule(teams, schedule):
-    """Derive per-team record from played matchups in schedule."""
+    """Derive per-team regular-season record from played matchups in schedule (playoff games don't count)."""
     records = {team["id"]: {"wins": 0, "losses": 0, "ties": 0} for team in teams}
 
     for match in schedule:
+        if is_playoff_matchup(match):
+            continue
         home = match.get("home")
         away = match.get("away")
         winner = match.get("winner")
@@ -95,21 +102,48 @@ def derive_records_from_schedule(teams, schedule):
 
     return records
 
+def get_weekly_scores(schedule):
+    """
+    Points scored by each team in each NFL week.
+
+    Multi-week matchups (e.g. two-week playoff rounds) are split into their individual weeks
+    using pointsByScoringPeriod, so every score covers exactly one week. Teams on a bye
+    (a matchup with only a home side) still scored that week and are included.
+
+    Args:
+        schedule (list): List of matchup dictionaries.
+
+    Returns:
+        dict: {scoring_period: {team_id: points}}
+    """
+    weekly_scores = defaultdict(dict)
+    for match in schedule:
+        for side in ("home", "away"):
+            team = match.get(side)
+            if not team:
+                continue
+            points_by_period = team.get("pointsByScoringPeriod") or {
+                match["matchupPeriodId"]: team["totalPoints"]
+            }
+            for period, points in points_by_period.items():
+                weekly_scores[int(period)][team["teamId"]] = points
+    return weekly_scores
+
+
 def calculate_team_scores(schedule):
     """
-    Aggregates total points scored by each team per matchup.
+    Collects each team's weekly scores.
     
     Args:
         schedule (list): List of matchup dictionaries.
     
     Returns:
-        defaultdict: Mapping of team ID to list of scores.
+        defaultdict: Mapping of team ID to list of scores, one per NFL week played.
     """
     team_scores = defaultdict(list)
-    for match in schedule:
-        if "home" in match and "away" in match:
-            team_scores[match["home"]["teamId"]].append(match["home"]["totalPoints"])
-            team_scores[match["away"]["teamId"]].append(match["away"]["totalPoints"])
+    for _, scores in sorted(get_weekly_scores(schedule).items()):
+        for tid, points in scores.items():
+            team_scores[tid].append(points)
     return team_scores
 
 def calculate_ppg(team_scores):
@@ -154,37 +188,26 @@ def calculate_consistency(team_ppg, team_scores):
     consistency_ranks = rank_stat(team_consistency_scores, reverse=True)
     return team_consistency_scores, consistency_ranks
 
-def calculate_overall_wins_and_losses(schedule, num_teams):
+def calculate_overall_wins_and_losses(schedule):
     """
-    Calculates overall wins and losses for each team based on weekly scores,
-    and returns overall wins/losses plus overall ranks (ties allowed).
+    Calculates overall wins and losses for each team: each week, a team "beats" every
+    team that scored less than it that week. Returns overall wins/losses plus overall
+    ranks (ties allowed).
     
     Args:
         schedule (list): List of matchup dictionaries.
-        num_teams (int): Number of teams in the league.
     
     Returns:
         tuple: (overall_wins, overall_losses, overall_ranks)
     """
     overall_wins = defaultdict(int)
     overall_losses = defaultdict(int)
-    weekly_matchups = defaultdict(list)
 
-    for match in schedule:
-        if "home" in match and "away" in match:
-            week = match["matchupPeriodId"]
-            weekly_matchups[week].extend([
-                (match["home"]["teamId"], match["home"]["totalPoints"]),
-                (match["away"]["teamId"], match["away"]["totalPoints"])
-            ])
-
-    for week, matchups in weekly_matchups.items():
-        sorted_week = sorted(matchups, key=lambda x: x[1], reverse=True)
+    for scores in get_weekly_scores(schedule).values():
+        sorted_week = sorted(scores.items(), key=lambda x: x[1], reverse=True)
         for i, (tid, _) in enumerate(sorted_week):
-            wins = num_teams - 1 - i
-            losses = i
-            overall_wins[tid] += wins
-            overall_losses[tid] += losses
+            overall_wins[tid] += len(sorted_week) - 1 - i
+            overall_losses[tid] += i
 
     overall_ranks = rank_stat(overall_wins, reverse=True)
     return overall_wins, overall_losses, overall_ranks
@@ -367,7 +390,7 @@ def calculate_power_rankings(
     team_scores = calculate_team_scores(schedule)
     team_ppg, ppg_ranks = calculate_ppg(team_scores)
     consistency_scores, consistency_ranks = calculate_consistency(team_ppg, team_scores)
-    overall_wins, overall_losses, overall_ranks = calculate_overall_wins_and_losses(schedule, num_teams)
+    overall_wins, overall_losses, overall_ranks = calculate_overall_wins_and_losses(schedule)
 
     stats = {
         "ppg": team_ppg,

@@ -1,19 +1,22 @@
 import os
 import logging
 import sys
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 import requests
 from flask import Flask, render_template, request
 from dotenv import load_dotenv
-from power_rankings_generator import calculate_power_rankings, get_current_week
+from power_rankings_generator import calculate_power_rankings, is_playoff_matchup
 from database import (
     init_db,
     get_rankings,
     get_available_seasons,
     get_available_weeks,
     get_discovered_seasons,
+    get_season_weeks,
+    save_season_weeks,
     get_season_sync_status_map,
     upsert_season_sync_status,
     save_rankings,
@@ -31,7 +34,6 @@ app.logger.setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 init_db()
 EARLIEST_PLAUSIBLE_ESPN_SEASON = 2000
-DEFAULT_REGULAR_SEASON_WEEKS = 14
 # How often to re-check the current season with ESPN while it has no completed weeks yet.
 CURRENT_SEASON_REPROBE_INTERVAL = timedelta(hours=1)
 
@@ -55,7 +57,6 @@ class Snapshot:
     """A week of rankings that is guaranteed to be in the database."""
     season: int
     week: int
-    regular_season_weeks: Optional[int]  # None when served from cache without an ESPN fetch
 
 
 class RequestError(Exception):
@@ -173,17 +174,36 @@ def extract_completed_weeks(season_data):
     )
 
 
-def get_regular_season_weeks(season_data):
-    schedule_settings = season_data.get("settings", {}).get("scheduleSettings", {})
-    matchup_period_count = schedule_settings.get("matchupPeriodCount")
-    if isinstance(matchup_period_count, int) and matchup_period_count > 0:
-        return matchup_period_count
+def describe_completed_weeks(season_data):
+    """
+    Week picker options for every completed matchup period, oldest first.
 
-    all_weeks = [m.get("matchupPeriodId") for m in season_data.get("schedule", []) if m.get("matchupPeriodId")]
-    if all_weeks:
-        return max(all_weeks)
+    Regular-season weeks are labeled "Week N". Playoff rounds are labeled by round and the NFL
+    weeks they cover, since some seasons used two-week playoff matchups.
 
-    return DEFAULT_REGULAR_SEASON_WEEKS
+    Returns:
+        list: [{"week": matchup_period, "label": str}]
+    """
+    schedule = season_data.get("schedule", [])
+    regular_season_end = max(
+        (m["matchupPeriodId"] for m in schedule if not is_playoff_matchup(m)), default=0
+    )
+    nfl_weeks = defaultdict(set)
+    for match in schedule:
+        for side in ("home", "away"):
+            team = match.get(side) or {}
+            nfl_weeks[match["matchupPeriodId"]].update(int(p) for p in team.get("pointsByScoringPeriod") or {})
+
+    options = []
+    for week in extract_completed_weeks(season_data):
+        if week <= regular_season_end:
+            label = f"Week {week}"
+        else:
+            span = sorted(nfl_weeks[week]) or [week]
+            weeks_text = f"Week {span[0]}" if len(span) == 1 else f"Weeks {span[0]}–{span[-1]}"
+            label = f"Playoffs Round {week - regular_season_end} ({weeks_text})"
+        options.append({"week": week, "label": label})
+    return options
 
 
 def is_transient_failure(status):
@@ -219,13 +239,14 @@ def probe_season(league_id, season, swid=None, espn_s2=None):
     if data is None:
         return False
 
-    completed_weeks = extract_completed_weeks(data)
-    if not completed_weeks:
+    week_options = describe_completed_weeks(data)
+    if not week_options:
         logger.info("Season %s: ESPN responded but no completed weeks found", season)
         upsert_season_sync_status(season, discovered=False, status="no_completed_weeks")
         return False
 
-    logger.info("Season %s: discovered with %d completed week(s)", season, len(completed_weeks))
+    logger.info("Season %s: discovered with %d completed week(s)", season, len(week_options))
+    save_season_weeks(season, week_options)
     upsert_season_sync_status(season, discovered=True, status="available")
     return True
 
@@ -275,12 +296,13 @@ def ensure_week_snapshot(league_id, season, requested_week=None, swid=None, espn
     Returns:
         Snapshot: The saved week, or None if the season/week has no completed data.
     """
-    # Fast path: if requesting a specific week and it's already cached, skip all ESPN calls.
-    if requested_week is not None:
+    # Fast path: if requesting a specific week that's already cached (along with the season's
+    # week list for the picker), skip all ESPN calls.
+    if requested_week is not None and get_season_weeks(season) is not None:
         cached_rankings, _ = get_rankings(season, requested_week)
         if cached_rankings:
             logger.info("Cache hit for season=%s week=%s — skipping ESPN fetch", season, requested_week)
-            return Snapshot(season=season, week=requested_week, regular_season_weeks=None)
+            return Snapshot(season=season, week=requested_week)
 
     espn_data = fetch_season_or_record_failure(
         league_id, season, swid, espn_s2,
@@ -289,16 +311,18 @@ def ensure_week_snapshot(league_id, season, requested_week=None, swid=None, espn
     if espn_data is None:
         return None
 
-    if not extract_completed_weeks(espn_data):
+    week_options = describe_completed_weeks(espn_data)
+    if not week_options:
         upsert_season_sync_status(season, discovered=False, status="snapshot_no_completed_weeks")
         return None
+    save_season_weeks(season, week_options)
 
-    regular_season_weeks = get_regular_season_weeks(espn_data)
-    latest_week = get_current_week(espn_data.get("schedule", []))
+    completed_weeks = [option["week"] for option in week_options]
+    latest_week = completed_weeks[-1]
     target_week = requested_week if requested_week is not None else latest_week
-    if not 1 <= target_week <= min(regular_season_weeks, latest_week):
+    if target_week not in completed_weeks:
         return None
-    snapshot = Snapshot(season=season, week=target_week, regular_season_weeks=regular_season_weeks)
+    snapshot = Snapshot(season=season, week=target_week)
 
     cached_rankings, _ = get_rankings(season, target_week)
     if cached_rankings:
@@ -401,11 +425,9 @@ def load_first_available_snapshot(config, candidate_seasons, week):
     raise RequestError("No completed matchup weeks available for this season yet", 404)
 
 
-def count_regular_season_weeks(snapshot):
-    if snapshot.regular_season_weeks:
-        return snapshot.regular_season_weeks
-    cached_weeks = get_available_weeks(snapshot.season)
-    return max(cached_weeks) if cached_weeks else DEFAULT_REGULAR_SEASON_WEEKS
+def get_week_options(season):
+    """Week picker options for a season, falling back to plain labels for its cached weeks."""
+    return get_season_weeks(season) or [{"week": w, "label": f"Week {w}"} for w in get_available_weeks(season)]
 
 
 @app.route("/")
@@ -425,16 +447,19 @@ def index():
         logger.error("Rankings missing from DB after snapshot — season=%s week=%s", snapshot.season, snapshot.week)
         raise RequestError("Unable to load rankings from cache after calculation", 500)
 
+    week_options = get_week_options(snapshot.season)
+    week_labels = {option["week"]: option["label"] for option in week_options}
+
     logger.info("Rendering rankings for season=%s week=%s", snapshot.season, snapshot.week)
     return render_template(
         "index.html",
         teams=ranked_teams,
         last_updated=format_last_updated(saved_updated_at),
         available_seasons=sorted(set(known_seasons + [snapshot.season]), reverse=True),
-        available_weeks=list(range(1, count_regular_season_weeks(snapshot) + 1)),
+        week_options=week_options,
         selected_season=snapshot.season,
-        selected_week=selection.week,
-        displayed_week=snapshot.week,
+        selected_week=snapshot.week,
+        selected_week_label=week_labels.get(snapshot.week, f"Week {snapshot.week}"),
     )
 
 if __name__ == "__main__":
