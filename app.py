@@ -2,7 +2,7 @@ import os
 import logging
 import sys
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 import requests
@@ -58,9 +58,10 @@ class Selection:
 
 @dataclass(frozen=True)
 class Snapshot:
-    """A week of rankings that is guaranteed to be in the database."""
+    """A week of rankings: saved in the database, or only in uncached_rankings when it shouldn't be saved."""
     season: int
     week: int
+    uncached_rankings: Optional[list] = None  # set when the rankings are missing data that may be available later
 
 
 class RequestError(Exception):
@@ -152,10 +153,25 @@ def fetch_fantasypros_data(api_key=None, timeout=10):
     }
 
     logger.info("Fetching FantasyPros data")
-    resp = requests.get(url, params=params, headers=headers, timeout=timeout)
-    resp.raise_for_status()
+    # The key is a query parameter, and requests puts the full URL in its error messages,
+    # so log only the status code or error type.
+    try:
+        resp = requests.get(url, params=params, headers=headers, timeout=timeout)
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.HTTPError as exc:
+        status_code = exc.response.status_code if exc.response is not None else None
+        logger.warning("FantasyPros request failed with HTTP %s; ROS strength unavailable", status_code)
+        return None
+    except (requests.RequestException, ValueError) as exc:
+        logger.warning("FantasyPros request failed (%s); ROS strength unavailable", type(exc).__name__)
+        return None
+    if not isinstance(data, dict) or not data.get("standings"):
+        # e.g. {"error": "no league with this key", "key": ...} with HTTP 200. Don't log it: it echoes the key.
+        logger.warning("FantasyPros response had no standings; ROS strength unavailable")
+        return None
     logger.info("Fetched FantasyPros data")
-    return resp.json()
+    return data
 
 
 def fetch_season_or_record_failure(league_id, season, swid, espn_s2, http_status_prefix, error_status):
@@ -369,6 +385,10 @@ def ensure_week_snapshot(league_id, season, requested_week=None, swid=None, espn
     fpros_data = fetch_fantasypros_data(fantasypros_key) if use_ros else None
     logger.info("Calculating rankings for season=%s week=%s", season, target_week)
     weekly_rankings = calculate_power_rankings(espn_data, fpros_json=fpros_data, target_week=target_week)
+    if use_ros and fpros_data is None and (fantasypros_key or os.getenv("FANTASYPROS_KEY")):
+        # FantasyPros failed this time. Show these rankings without ROS, but don't cache them,
+        # so the next request tries FantasyPros again.
+        return replace(snapshot, uncached_rankings=weekly_rankings)
     save_rankings(target_week, season, weekly_rankings)
     mark_season_backfilled(season, status="snapshot_computed")
     return snapshot
@@ -478,7 +498,10 @@ def index():
     candidate_seasons = build_candidate_seasons(selection.season, known_seasons)
     snapshot = load_first_available_snapshot(config, candidate_seasons, selection.week)
 
-    ranked_teams, saved_updated_at = get_rankings(snapshot.season, snapshot.week)
+    if snapshot.uncached_rankings:
+        ranked_teams, saved_updated_at = snapshot.uncached_rankings, None
+    else:
+        ranked_teams, saved_updated_at = get_rankings(snapshot.season, snapshot.week)
     if not ranked_teams:
         logger.error("Rankings missing from DB after snapshot — season=%s week=%s", snapshot.season, snapshot.week)
         raise RequestError("Unable to load rankings from cache after calculation", 500)

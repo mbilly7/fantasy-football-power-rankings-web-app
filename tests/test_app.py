@@ -18,11 +18,11 @@ def test_fetch_espn_league_data(mock_get):
 def test_fetch_fantasypros_data(mock_get):
     mock_response = MagicMock()
     mock_response.raise_for_status.return_value = None
-    mock_response.json.return_value = {"standings": []}
+    mock_response.json.return_value = {"standings": [{"teamId": 1, "rank": 1}]}
     mock_get.return_value = mock_response
 
     data = fetch_fantasypros_data("test_key")
-    assert data == {"standings": []}
+    assert data == {"standings": [{"teamId": 1, "rank": 1}]}
     mock_get.assert_called_once()
 
 
@@ -262,3 +262,53 @@ def test_needs_probe_retries_pre_2018_404s_from_old_endpoint_once():
     assert not needs_probe(2017, status("history_http_404"), now)  # leagueHistory said no
     assert needs_probe(2017, status("history_http_503"), now)  # transient
     assert not needs_probe(2018, status("http_404"), now)
+
+
+
+@patch('app.requests.get')
+def test_fetch_fantasypros_data_failure_returns_none_without_logging_key(mock_get, caplog):
+    import requests
+
+    def failing_get(url, params=None, **_kwargs):
+        response = requests.Response()
+        response.status_code = 403
+        response.url = requests.Request("GET", url, params=params).prepare().url
+        return response
+
+    mock_get.side_effect = failing_get
+    assert fetch_fantasypros_data("SECRET-KEY") is None
+
+    mock_get.side_effect = requests.ConnectionError("Max retries exceeded with url: /api?key=SECRET-KEY")
+    assert fetch_fantasypros_data("SECRET-KEY") is None
+
+    error_response = MagicMock()
+    error_response.raise_for_status.return_value = None
+    error_response.json.return_value = {"error": "no league with this key", "key": "SECRET-KEY"}
+    mock_get.side_effect = None
+    mock_get.return_value = error_response
+    assert fetch_fantasypros_data("SECRET-KEY") is None
+
+    assert "HTTP 403" in caplog.text
+    assert "SECRET-KEY" not in caplog.text
+
+
+@patch("app.fetch_fantasypros_data", return_value=None)
+@patch("app.fetch_espn_league_data")
+def test_snapshot_not_cached_when_fantasypros_fails(mock_fetch_espn, _mock_fpros):
+    from app import ensure_week_snapshot
+    from database import get_rankings
+
+    teams = [{"id": i, "name": f"Team {i}", "record": {"overall": {"wins": 0, "losses": 0, "ties": 0}}} for i in (1, 2)]
+    schedule = [
+        {"matchupPeriodId": 1, "playoffTierType": "NONE", "winner": "HOME",
+         "home": {"teamId": 1, "totalPoints": 100.0}, "away": {"teamId": 2, "totalPoints": 90.0}},
+        {"matchupPeriodId": 2, "playoffTierType": "NONE", "winner": "UNDECIDED",
+         "home": {"teamId": 1, "totalPoints": 0.0}, "away": {"teamId": 2, "totalPoints": 0.0}},
+    ]
+    mock_fetch_espn.return_value = {"teams": teams, "schedule": schedule}
+
+    snapshot = ensure_week_snapshot("123", 2026, fantasypros_key="key")
+
+    assert snapshot.week == 1
+    assert [t["ros_strength"] for t in snapshot.uncached_rankings] == ["N/A", "N/A"]
+    assert get_rankings(2026, 1) == (None, None)  # retried on the next request
